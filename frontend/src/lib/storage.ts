@@ -1,5 +1,6 @@
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
 import type { AnalysisParams } from '../sr';
+import type { ChartFingerprint } from './preferences';
 
 export interface TickerList {
   id: string;
@@ -22,13 +23,24 @@ export interface Session {
   period: string;
   interval: string;
   params: AnalysisParams;
-  snapshot: { ticker: string; ohlcv: OHLCVBar[]; sr_levels: SRLevel[]; w_patterns?: WPattern[]; score?: BreakoutScore; is_coiling?: boolean }[];
+  tickers: string[];
+  snapshot: { ticker: string; ohlcv?: OHLCVBar[]; sr_levels: SRLevel[]; w_patterns?: WPattern[]; score?: BreakoutScore; is_coiling?: boolean }[];
+}
+
+export interface FeedbackEntry {
+  id: string;
+  ticker: string;
+  createdAt: number;
+  vote: 'like' | 'dislike';
+  tags: string[];
+  fingerprint: ChartFingerprint;
 }
 
 const KEYS = {
   lists: 'sr_ticker_lists',
   presets: 'sr_presets',
   sessions: 'sr_sessions',
+  feedback: 'sr_feedback',
 } as const;
 
 function load<T>(key: string): T[] {
@@ -40,7 +52,12 @@ function load<T>(key: string): T[] {
 }
 
 function save<T>(key: string, data: T[]) {
-  localStorage.setItem(key, JSON.stringify(data));
+  try {
+    localStorage.setItem(key, JSON.stringify(data));
+  } catch (e) {
+    console.error('[storage] localStorage write failed:', e);
+    throw e;
+  }
 }
 
 function uid() {
@@ -115,11 +132,41 @@ export function saveSession(
   snapshot: Session['snapshot']
 ): Session {
   const sessions = getSessions();
-  const item: Session = { id: uid(), name, createdAt: Date.now(), period, interval, params, snapshot };
+  // Strip OHLCV from snapshot — too heavy for localStorage (≈2MB for 378 tickers).
+  // Restore will re-fetch from Yahoo Finance using the saved tickers list.
+  const lightSnapshot = snapshot.map(({ ohlcv: _ohlcv, ...rest }) => rest);
+  const tickers = snapshot.map(r => r.ticker);
+  const item: Session = { id: uid(), name, createdAt: Date.now(), period, interval, params, tickers, snapshot: lightSnapshot };
   save(KEYS.sessions, [item, ...sessions]);
   return item;
 }
 
 export function deleteSession(id: string) {
   save(KEYS.sessions, getSessions().filter(s => s.id !== id));
+}
+
+// ── Feedback ───────────────────────────────────────────────────────────────────
+
+export function getFeedback(): FeedbackEntry[] {
+  return load<FeedbackEntry>(KEYS.feedback);
+}
+
+export function upsertFeedback(
+  ticker: string,
+  vote: 'like' | 'dislike',
+  tags: string[],
+  fingerprint: ChartFingerprint,
+): FeedbackEntry {
+  const all = getFeedback().filter(f => f.ticker !== ticker);
+  const item: FeedbackEntry = { id: uid(), ticker, createdAt: Date.now(), vote, tags, fingerprint };
+  save(KEYS.feedback, [item, ...all]);
+  return item;
+}
+
+export function removeFeedback(ticker: string) {
+  save(KEYS.feedback, getFeedback().filter(f => f.ticker !== ticker));
+}
+
+export function clearFeedback() {
+  save(KEYS.feedback, []);
 }

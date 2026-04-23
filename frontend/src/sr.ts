@@ -1,4 +1,8 @@
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from './api';
+import { computeFingerprint } from './lib/preferences';
+import type { ChartFingerprint } from './lib/preferences';
+
+export type { ChartFingerprint };
 
 export interface AnalysisParams {
   dif: number;
@@ -11,6 +15,7 @@ export interface OhlcvAnalysis {
   w_patterns: WPattern[];
   score: BreakoutScore;
   is_coiling: boolean;
+  fingerprint: ChartFingerprint;
 }
 
 // ── Pivot detection ────────────────────────────────────────────────────────────
@@ -221,6 +226,7 @@ export function analyzeOhlcv(ohlcv: OHLCVBar[], params: AnalysisParams): OhlcvAn
       w_patterns: [],
       score: { total: 0, tightness: 0, proximity: 0, accumulation: 0, label: null },
       is_coiling: false,
+      fingerprint: computeFingerprint(ohlcv, [], { total: 0, tightness: 0, proximity: 0, accumulation: 0, label: null }, false, []),
     };
   }
 
@@ -239,8 +245,9 @@ export function analyzeOhlcv(ohlcv: OHLCVBar[], params: AnalysisParams): OhlcvAn
   const w_patterns = detectWPatterns(pivotLows, highs, timestamps, params.dif, lastPrice);
   const score = computeBreakoutScore(ohlcv, sr_levels);
   const is_coiling = detectCoil(pivotLows, pivotHighs);
+  const fingerprint = computeFingerprint(ohlcv, sr_levels, score, is_coiling, w_patterns);
 
-  return { sr_levels, w_patterns, score, is_coiling };
+  return { sr_levels, w_patterns, score, is_coiling, fingerprint };
 }
 
 // Kept for backward compatibility (session restore uses sr_levels directly)

@@ -1,14 +1,18 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { TickerForm } from './components/TickerForm';
 import { SRParamsPanel } from './components/SRParamsPanel';
 import { ChartCard } from './components/ChartCard';
 import { ListPanel } from './components/ListPanel';
 import { SessionPanel } from './components/SessionPanel';
+import { PreferencePanel } from './components/PreferencePanel';
 import { fetchOhlcv } from './api';
 import { analyzeOhlcv } from './sr';
+import type { ChartFingerprint } from './sr';
 import type { OHLCVBar, TickerResult, FetchParams } from './api';
 import type { AnalysisParams } from './sr';
-import type { TickerList, Session } from './lib/storage';
+import type { TickerList, Session, FeedbackEntry } from './lib/api-storage';
+import { getFeedback, upsertFeedback, removeFeedback, migrateFromLocalStorage } from './lib/api-storage';
+import { buildPreferenceModel, computePreferenceBonus } from './lib/preferences';
 import './App.css';
 
 function useDebounce<T>(value: T, delay: number): T {
@@ -44,18 +48,60 @@ export default function App() {
   const [selectedList, setSelectedList] = useState<TickerList | null>(null);
   const [currentPeriod, setCurrentPeriod] = useState('3mo');
   const [currentInterval, setCurrentInterval] = useState('1d');
+  const [activeTimeframe, setActiveTimeframe] = useState<{ period: string; interval: string } | null>(null);
+
+  const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
+  const [fingerprintByTicker, setFingerprintByTicker] = useState<Record<string, ChartFingerprint>>({});
+  const [scoreMode, setScoreMode] = useState<'raw' | 'adjusted'>('raw');
 
   const debouncedParams = useDebounce(analysisParams, 300);
 
   useEffect(() => {
+    migrateFromLocalStorage().then(() => getFeedback().then(setFeedback));
+  }, []);
+
+  useEffect(() => {
     const entries = Object.entries(ohlcvByTicker);
-    if (entries.length === 0) { setResults([]); return; }
-    const computed: TickerResult[] = entries.map(([ticker, ohlcv]) => {
+    if (entries.length === 0) { setResults([]); setFingerprintByTicker({}); return; }
+    const computed: TickerResult[] = [];
+    const fps: Record<string, ChartFingerprint> = {};
+    for (const [ticker, ohlcv] of entries) {
       const analysis = analyzeOhlcv(ohlcv, debouncedParams);
-      return { ticker, ohlcv, ...analysis };
-    });
+      computed.push({ ticker, ohlcv, ...analysis });
+      fps[ticker] = analysis.fingerprint;
+    }
     setResults(computed);
+    setFingerprintByTicker(fps);
   }, [ohlcvByTicker, debouncedParams]);
+
+  const preferenceModel = useMemo(() => buildPreferenceModel(feedback), [feedback]);
+
+  const getAdjustedScore = (r: TickerResult) => {
+    if (!preferenceModel || scoreMode === 'raw') return r.score.total;
+    const fp = fingerprintByTicker[r.ticker];
+    if (!fp) return r.score.total;
+    return r.score.total + computePreferenceBonus(fp, preferenceModel);
+  };
+
+  const handleFeedbackVote = async (ticker: string, vote: 'like' | 'dislike', tags: string[]) => {
+    const fp = fingerprintByTicker[ticker];
+    if (!fp) return;
+    const entry = await upsertFeedback(ticker, vote, tags, fp);
+    setFeedback(prev => [entry, ...prev.filter(f => f.ticker !== ticker)]);
+  };
+
+  const handleRemoveFeedback = async (ticker: string) => {
+    await removeFeedback(ticker);
+    setFeedback(prev => prev.filter(f => f.ticker !== ticker));
+  };
+
+  const handleClearAll = () => {
+    setOhlcvByTicker({});
+    setActiveTimeframe(null);
+    setFromCache(null);
+    setError(null);
+    setNoData(false);
+  };
 
   const handleFetch = async (params: FetchParams) => {
     setCurrentPeriod(params.period);
@@ -64,6 +110,11 @@ export default function App() {
     setError(null);
     setNoData(false);
     setFromCache(null);
+
+    const utChanged = activeTimeframe &&
+      (activeTimeframe.period !== params.period || activeTimeframe.interval !== params.interval);
+    if (utChanged) setOhlcvByTicker({});
+
     try {
       const data = await fetchOhlcv(params);
       let allCached = true;
@@ -72,7 +123,8 @@ export default function App() {
         newOhlcv[r.ticker] = r.ohlcv;
         if (!r.from_cache) allCached = false;
       }
-      setOhlcvByTicker(prev => ({ ...prev, ...newOhlcv }));
+      setOhlcvByTicker(prev => (utChanged ? newOhlcv : { ...prev, ...newOhlcv }));
+      setActiveTimeframe({ period: params.period, interval: params.interval });
       setFromCache(data.results.length > 0 ? allCached : null);
       if (data.results.length === 0) setNoData(true);
     } catch {
@@ -83,15 +135,27 @@ export default function App() {
   };
 
   const handleRestoreSession = (session: Session) => {
-    const byTicker: Record<string, OHLCVBar[]> = {};
-    for (const r of session.snapshot) byTicker[r.ticker] = r.ohlcv;
-    setOhlcvByTicker(byTicker);
     setAnalysisParams(session.params);
     setCurrentPeriod(session.period);
     setCurrentInterval(session.interval);
+    setActiveTimeframe(null);
     setFromCache(null);
     setError(null);
     setNoData(false);
+
+    // Legacy sessions stored OHLCV — restore charts directly
+    const hasOhlcv = session.snapshot.length > 0 && session.snapshot[0].ohlcv && session.snapshot[0].ohlcv.length > 0;
+    if (hasOhlcv) {
+      const byTicker: Record<string, OHLCVBar[]> = {};
+      for (const r of session.snapshot) { if (r.ohlcv) byTicker[r.ticker] = r.ohlcv; }
+      setOhlcvByTicker(byTicker);
+      setActiveTimeframe({ period: session.period, interval: session.interval });
+    } else {
+      // New-style session: pre-fill the ticker list so user just clicks "Charger"
+      setOhlcvByTicker({});
+      const tickers = session.tickers ?? session.snapshot.map(r => r.ticker);
+      setSelectedList({ id: '_restore_', name: session.name, tickers, createdAt: 0 });
+    }
   };
 
   const loadedTickers = new Set(Object.keys(ohlcvByTicker));
@@ -115,7 +179,7 @@ export default function App() {
   });
 
   const sorted = [...filtered].sort((a, b) => {
-    if (sortMode === 'score') return b.score.total - a.score.total;
+    if (sortMode === 'score') return getAdjustedScore(b) - getAdjustedScore(a);
     return a.ticker.localeCompare(b.ticker);
   });
 
@@ -151,6 +215,8 @@ export default function App() {
           loading={loading}
           loadedTickers={loadedTickers}
           selectedList={selectedList}
+          activeTimeframe={activeTimeframe}
+          onClearAll={handleClearAll}
         />
 
         <SessionPanel
@@ -160,6 +226,11 @@ export default function App() {
           params={analysisParams}
           results={results}
           onRestore={handleRestoreSession}
+        />
+
+        <PreferencePanel
+          feedback={feedback}
+          onFeedbackChange={setFeedback}
         />
 
         {loading && (
@@ -209,21 +280,41 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  <span className="text-xs text-slate-500 uppercase tracking-widest">Trier</span>
-                  <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
-                    <button
-                      onClick={() => setSortMode('score')}
-                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                    >
-                      Score ↓
-                    </button>
-                    <button
-                      onClick={() => setSortMode('ticker')}
-                      className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                    >
-                      A–Z
-                    </button>
+                <div className="flex items-center gap-3">
+                  {preferenceModel && (
+                    <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
+                      <button
+                        onClick={() => setScoreMode('raw')}
+                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${scoreMode === 'raw' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                        title="Classement basé uniquement sur le score algorithmique brut"
+                      >
+                        Brut
+                      </button>
+                      <button
+                        onClick={() => setScoreMode('adjusted')}
+                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${scoreMode === 'adjusted' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                        title="Classement tenant compte de tes préférences personnelles"
+                      >
+                        Ajusté ✦
+                      </button>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-widest">Trier</span>
+                    <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
+                      <button
+                        onClick={() => setSortMode('score')}
+                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        Score ↓
+                      </button>
+                      <button
+                        onClick={() => setSortMode('ticker')}
+                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                      >
+                        A–Z
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -281,17 +372,30 @@ export default function App() {
               </div>
             ) : (
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {sorted.map(r => (
-                  <ChartCard
-                    key={r.ticker}
-                    ticker={r.ticker}
-                    ohlcv={r.ohlcv}
-                    srLevels={r.sr_levels}
-                    wPatterns={r.w_patterns}
-                    score={r.score}
-                    isCoiling={r.is_coiling}
-                  />
-                ))}
+                {sorted.map(r => {
+                  const fp = fingerprintByTicker[r.ticker];
+                  const vote = feedback.find(f => f.ticker === r.ticker)?.vote ?? null;
+                  const bonus = (preferenceModel && fp)
+                    ? computePreferenceBonus(fp, preferenceModel)
+                    : null;
+                  if (!fp) return null;
+                  return (
+                    <ChartCard
+                      key={r.ticker}
+                      ticker={r.ticker}
+                      ohlcv={r.ohlcv}
+                      srLevels={r.sr_levels}
+                      wPatterns={r.w_patterns}
+                      score={r.score}
+                      isCoiling={r.is_coiling}
+                      fingerprint={fp}
+                      currentVote={vote}
+                      preferenceBonus={bonus}
+                      onFeedback={(v, tags) => handleFeedbackVote(r.ticker, v, tags)}
+                      onRemoveFeedback={() => handleRemoveFeedback(r.ticker)}
+                    />
+                  );
+                })}
               </div>
             )}
           </>

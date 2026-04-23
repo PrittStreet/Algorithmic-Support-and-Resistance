@@ -1,7 +1,6 @@
-import { useState } from 'react';
-import { getSessions, saveSession, deleteSession } from '../lib/storage';
-import type { Session } from '../lib/storage';
-import type { OHLCVBar, SRLevel } from '../api';
+import { useState, useEffect } from 'react';
+import { getSessions, saveSession, deleteSession } from '../lib/api-storage';
+import type { Session, SessionEntry } from '../lib/api-storage';
 import type { AnalysisParams } from '../sr';
 
 interface Props {
@@ -9,32 +8,48 @@ interface Props {
   period: string;
   interval: string;
   params: AnalysisParams;
-  results: { ticker: string; ohlcv: OHLCVBar[]; sr_levels: SRLevel[] }[];
+  results: SessionEntry[];
   onRestore: (session: Session) => void;
 }
 
 export function SessionPanel({ hasData, period, interval, params, results, onRestore }: Props) {
-  const [sessions, setSessions] = useState(getSessions);
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
   const [open, setOpen] = useState(true);
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const refresh = () => setSessions(getSessions());
+  const refresh = () => getSessions().then(setSessions);
+  useEffect(() => { refresh(); }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim()) return;
-    saveSession(name.trim(), period, interval, params, results);
-    setName('');
-    setSaving(false);
-    refresh();
+    setSaveError(null);
+    try {
+      const tickers = results.map(r => r.ticker);
+      await saveSession(name.trim(), period, interval, params, tickers, results);
+      setName('');
+      setSaving(false);
+      refresh();
+    } catch {
+      setSaveError('Erreur lors de la sauvegarde. Le serveur est-il démarré ?');
+    }
   };
 
-  const handleDelete = (id: string) => {
-    deleteSession(id);
-    refresh();
+  const handleDelete = async (id: string) => {
+    if (confirmDeleteId === id) {
+      await deleteSession(id);
+      refresh();
+      setConfirmDeleteId(null);
+    } else {
+      setConfirmDeleteId(id);
+    }
   };
 
-  const fmt = (ts: number) => new Date(ts).toLocaleDateString('fr-FR', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+  const fmt = (ts: number) => new Date(ts).toLocaleDateString('fr-FR', {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+  });
 
   return (
     <div className="bg-slate-900 border border-slate-700 rounded-2xl mb-8 overflow-hidden">
@@ -55,20 +70,25 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
         <div className="px-6 pb-5 space-y-4">
           {hasData && (
             saving ? (
-              <div className="flex items-center gap-2">
-                <input
-                  autoFocus
-                  type="text"
-                  value={name}
-                  onChange={e => setName(e.target.value)}
-                  onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setSaving(false); }}
-                  placeholder="Nom de la session (ex: NASDAQ 3mo swing)"
-                  className="flex-1 bg-slate-800 border border-blue-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
-                />
-                <button onClick={handleSave} className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors whitespace-nowrap">
-                  Sauvegarder
-                </button>
-                <button onClick={() => setSaving(false)} className="text-slate-500 hover:text-slate-300 px-2 py-2 transition-colors">✕</button>
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  <input
+                    autoFocus
+                    type="text"
+                    value={name}
+                    onChange={e => { setName(e.target.value); setSaveError(null); }}
+                    onKeyDown={e => { if (e.key === 'Enter') handleSave(); if (e.key === 'Escape') setSaving(false); }}
+                    placeholder="Nom de la session (ex: NYSE 1d swing)"
+                    className="flex-1 bg-slate-800 border border-blue-500 rounded-lg px-3 py-2 text-white text-sm focus:outline-none"
+                  />
+                  <button onClick={handleSave} className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors whitespace-nowrap">
+                    Sauvegarder
+                  </button>
+                  <button onClick={() => { setSaving(false); setSaveError(null); }} className="text-slate-500 hover:text-slate-300 px-2 py-2 transition-colors">✕</button>
+                </div>
+                {saveError && (
+                  <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded-lg px-3 py-2">{saveError}</p>
+                )}
               </div>
             ) : (
               <button
@@ -89,7 +109,7 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
                   <div className="min-w-0">
                     <p className="text-white text-sm font-medium truncate">{s.name}</p>
                     <p className="text-slate-500 text-xs mt-0.5">
-                      {fmt(s.createdAt)} · {s.period} / {s.interval} · {s.snapshot.length} tickers
+                      {fmt(s.createdAt)} · {s.period} / {s.interval} · {s.tickers.length} tickers
                     </p>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
@@ -99,13 +119,30 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
                     >
                       Restaurer
                     </button>
-                    <button
-                      onClick={() => handleDelete(s.id)}
-                      className="text-xs text-slate-600 hover:text-red-400 px-2 py-1.5 transition-colors"
-                      title="Supprimer"
-                    >
-                      ✕
-                    </button>
+                    {confirmDeleteId === s.id ? (
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => handleDelete(s.id)}
+                          className="text-xs bg-red-700 hover:bg-red-600 text-white px-2 py-1.5 rounded-lg transition-colors"
+                        >
+                          Confirmer
+                        </button>
+                        <button
+                          onClick={() => setConfirmDeleteId(null)}
+                          className="text-xs text-slate-500 hover:text-slate-300 px-2 py-1.5 transition-colors"
+                        >
+                          Annuler
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => handleDelete(s.id)}
+                        className="text-xs text-slate-600 hover:text-red-400 px-2 py-1.5 transition-colors"
+                        title="Supprimer"
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
                 </div>
               ))}

@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { getPresets, savePreset, deletePreset } from '../lib/storage';
+import { useState, useEffect } from 'react';
+import { getPresets, savePreset, deletePreset } from '../lib/api-storage';
+import type { Preset } from '../lib/api-storage';
 import type { AnalysisParams } from '../sr';
 
 interface Props {
@@ -8,22 +9,23 @@ interface Props {
 }
 
 export function PresetSelector({ current, onLoad }: Props) {
-  const [presets, setPresets] = useState(getPresets);
+  const [presets, setPresets] = useState<Preset[]>([]);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
 
-  const refresh = () => setPresets(getPresets());
+  const refresh = () => getPresets().then(setPresets);
+  useEffect(() => { refresh(); }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!name.trim()) return;
-    savePreset(name.trim(), current);
+    await savePreset(name.trim(), current);
     setName('');
     setSaving(false);
     refresh();
   };
 
-  const handleDelete = (id: string) => {
-    deletePreset(id);
+  const handleDelete = async (id: string) => {
+    await deletePreset(id);
     refresh();
   };
 

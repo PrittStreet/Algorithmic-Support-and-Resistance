@@ -1,6 +1,6 @@
-import { useState } from 'react';
-import { getLists, saveList, updateList, deleteList } from '../lib/storage';
-import type { TickerList } from '../lib/storage';
+import { useState, useEffect } from 'react';
+import { getLists, saveList, updateList, deleteList } from '../lib/api-storage';
+import type { TickerList } from '../lib/api-storage';
 
 interface Props {
   selectedId: string | null;
@@ -9,33 +9,44 @@ interface Props {
 }
 
 export function ListPanel({ selectedId, loadedTickers, onSelect }: Props) {
-  const [lists, setLists] = useState(getLists);
+  const [lists, setLists] = useState<TickerList[]>([]);
   const [open, setOpen] = useState(false);
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [newTickers, setNewTickers] = useState('');
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const refresh = () => setLists(getLists());
+  const refresh = () => getLists().then(setLists);
+  useEffect(() => { refresh(); }, []);
 
-  const handleCreate = () => {
+  const parseTickers = (raw: string) =>
+    raw.split(/[\s,;]+/).map(t => t.trim().toUpperCase()).filter(t => /^[A-Z0-9.^-]{1,10}$/.test(t));
+
+  const handleCreate = async () => {
     if (!newName.trim() || !newTickers.trim()) return;
-    const tickers = newTickers.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
-    saveList(newName.trim(), tickers);
-    setNewName('');
-    setNewTickers('');
-    setCreating(false);
-    refresh();
+    setSaveError(null);
+    const tickers = parseTickers(newTickers);
+    if (tickers.length === 0) { setSaveError('Aucun ticker valide trouvé.'); return; }
+    try {
+      await saveList(newName.trim(), tickers);
+      setNewName('');
+      setNewTickers('');
+      setCreating(false);
+      refresh();
+    } catch {
+      setSaveError('Erreur lors de la sauvegarde. Le serveur est-il démarré ?');
+    }
   };
 
-  const handleRename = (id: string, name: string) => {
-    updateList(id, { name });
+  const handleRename = async (id: string, name: string) => {
+    await updateList(id, { name });
     setEditing(null);
     refresh();
   };
 
-  const handleDelete = (id: string) => {
-    deleteList(id);
+  const handleDelete = async (id: string) => {
+    await deleteList(id);
     refresh();
   };
 
@@ -147,16 +158,24 @@ export function ListPanel({ selectedId, loadedTickers, onSelect }: Props) {
               />
               <textarea
                 value={newTickers}
-                onChange={e => setNewTickers(e.target.value)}
-                placeholder="Coller les tickers séparés par des virgules (AAPL, MSFT, TSLA...)"
-                rows={3}
+                onChange={e => { setNewTickers(e.target.value); setSaveError(null); }}
+                placeholder="Coller les tickers séparés par virgules, espaces ou sauts de ligne (AAPL, MSFT, TSLA...)"
+                rows={4}
                 className="w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 transition-colors resize-none font-mono"
               />
+              {newTickers.trim() && (
+                <p className="text-xs text-slate-500">
+                  {parseTickers(newTickers).length} tickers détectés
+                </p>
+              )}
+              {saveError && (
+                <p className="text-xs text-red-400 bg-red-950 border border-red-800 rounded-lg px-3 py-2">{saveError}</p>
+              )}
               <div className="flex gap-2">
                 <button onClick={handleCreate} className="text-sm bg-blue-600 hover:bg-blue-500 text-white px-4 py-2 rounded-lg transition-colors">
                   Créer
                 </button>
-                <button onClick={() => setCreating(false)} className="text-sm text-slate-500 hover:text-slate-300 px-4 py-2 transition-colors">
+                <button onClick={() => { setCreating(false); setSaveError(null); }} className="text-sm text-slate-500 hover:text-slate-300 px-4 py-2 transition-colors">
                   Annuler
                 </button>
               </div>

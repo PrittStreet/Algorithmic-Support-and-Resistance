@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   createChart,
   CandlestickSeries,
@@ -7,6 +7,8 @@ import {
   type IChartApi,
 } from 'lightweight-charts';
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
+import type { ChartFingerprint } from '../lib/preferences';
+import { LIKE_TAGS, DISLIKE_TAGS } from '../lib/preferences';
 
 interface ChartCardProps {
   ticker: string;
@@ -15,6 +17,11 @@ interface ChartCardProps {
   wPatterns: WPattern[];
   score: BreakoutScore;
   isCoiling: boolean;
+  fingerprint: ChartFingerprint;
+  currentVote: 'like' | 'dislike' | null;
+  preferenceBonus: number | null;
+  onFeedback: (vote: 'like' | 'dislike', tags: string[]) => void;
+  onRemoveFeedback: () => void;
 }
 
 function ScoreBadge({ score }: { score: BreakoutScore }) {
@@ -57,9 +64,15 @@ function PatternTags({ wPatterns, isCoiling }: { wPatterns: WPattern[]; isCoilin
   );
 }
 
-export function ChartCard({ ticker, ohlcv, srLevels, wPatterns, score, isCoiling }: ChartCardProps) {
+export function ChartCard({
+  ticker, ohlcv, srLevels, wPatterns, score, isCoiling,
+  fingerprint: _fingerprint,
+  currentVote, preferenceBonus, onFeedback, onRemoveFeedback,
+}: ChartCardProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const [tagPickerVote, setTagPickerVote] = useState<'like' | 'dislike' | null>(null);
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -139,13 +152,41 @@ export function ChartCard({ ticker, ohlcv, srLevels, wPatterns, score, isCoiling
   const resistances = srLevels.filter(l => l.type === 'resistance');
   const hasPatterns = wPatterns.length > 0 || isCoiling;
 
+  const handleVote = (vote: 'like' | 'dislike') => {
+    if (currentVote === vote) {
+      // Toggle off
+      onRemoveFeedback();
+      setTagPickerVote(null);
+      setSelectedTags([]);
+    } else {
+      setTagPickerVote(vote);
+      setSelectedTags([]);
+    }
+  };
+
+  const handleTagToggle = (tag: string) => {
+    setSelectedTags(prev => prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]);
+  };
+
+  const handleConfirmVote = () => {
+    if (!tagPickerVote) return;
+    onFeedback(tagPickerVote, selectedTags);
+    setTagPickerVote(null);
+    setSelectedTags([]);
+  };
+
+  const activeTags = tagPickerVote === 'like' ? LIKE_TAGS : DISLIKE_TAGS;
+
+  const borderClass =
+    currentVote === 'like'    ? 'border-green-600/70' :
+    currentVote === 'dislike' ? 'border-red-600/70' :
+    wPatterns.some(w => w.confirmed) ? 'border-green-700/50' :
+    wPatterns.length > 0             ? 'border-yellow-700/50' :
+    isCoiling                        ? 'border-purple-700/50' :
+                                       'border-slate-700';
+
   return (
-    <div className={`bg-slate-900 border rounded-2xl p-4 hover:border-slate-500 transition-colors ${
-      wPatterns.some(w => w.confirmed) ? 'border-green-700/50' :
-      wPatterns.length > 0             ? 'border-yellow-700/50' :
-      isCoiling                        ? 'border-purple-700/50' :
-                                         'border-slate-700'
-    }`}>
+    <div className={`bg-slate-900 border rounded-2xl p-4 hover:border-slate-500 transition-colors ${borderClass}`}>
       {/* Header */}
       <div className="flex items-start justify-between mb-2 gap-2">
         <div className="min-w-0">
@@ -155,10 +196,85 @@ export function ChartCard({ ticker, ohlcv, srLevels, wPatterns, score, isCoiling
             <span className="text-red-400">{resistances.length} rés{resistances.length !== 1 ? 's' : ''}</span>
           </div>
         </div>
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
+          {/* Preference bonus badge */}
+          {preferenceBonus !== null && preferenceBonus !== 0 && (
+            <span
+              className={`text-xs px-1.5 py-0.5 rounded font-mono font-semibold ${
+                preferenceBonus > 0
+                  ? 'bg-green-900/50 text-green-400 border border-green-800'
+                  : 'bg-red-900/50 text-red-400 border border-red-800'
+              }`}
+              title="Bonus/malus de préférence personnelle"
+            >
+              {preferenceBonus > 0 ? '+' : ''}{preferenceBonus}
+            </span>
+          )}
           <ScoreBadge score={score} />
+          {/* Like / Dislike buttons */}
+          <button
+            onClick={() => handleVote('like')}
+            className={`text-sm px-1.5 py-1 rounded-lg transition-colors ${
+              currentVote === 'like'
+                ? 'bg-green-700 text-white'
+                : 'text-slate-500 hover:text-green-400 hover:bg-slate-800'
+            }`}
+            title="J'aime ce setup"
+          >👍</button>
+          <button
+            onClick={() => handleVote('dislike')}
+            className={`text-sm px-1.5 py-1 rounded-lg transition-colors ${
+              currentVote === 'dislike'
+                ? 'bg-red-800 text-white'
+                : 'text-slate-500 hover:text-red-400 hover:bg-slate-800'
+            }`}
+            title="Je n'aime pas ce setup"
+          >👎</button>
         </div>
       </div>
+
+      {/* Tag picker (après un vote) */}
+      {tagPickerVote && (
+        <div className="mb-3 p-2 bg-slate-800 rounded-xl border border-slate-700">
+          <p className="text-xs text-slate-400 mb-2">
+            {tagPickerVote === 'like' ? '👍 Pourquoi tu aimes ?' : '👎 Pourquoi tu n\'aimes pas ?'}
+            <span className="text-slate-600 ml-1">(optionnel)</span>
+          </p>
+          <div className="flex flex-wrap gap-1 mb-2">
+            {activeTags.map(tag => (
+              <button
+                key={tag}
+                onClick={() => handleTagToggle(tag)}
+                className={`text-xs px-2 py-0.5 rounded-full border transition-colors ${
+                  selectedTags.includes(tag)
+                    ? tagPickerVote === 'like'
+                      ? 'bg-green-700 text-white border-green-600'
+                      : 'bg-red-700 text-white border-red-600'
+                    : 'bg-slate-700 text-slate-400 border-slate-600 hover:border-slate-400'
+                }`}
+              >
+                {tag}
+              </button>
+            ))}
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={handleConfirmVote}
+              className={`text-xs px-3 py-1 rounded-lg text-white transition-colors ${
+                tagPickerVote === 'like' ? 'bg-green-700 hover:bg-green-600' : 'bg-red-700 hover:bg-red-600'
+              }`}
+            >
+              Valider
+            </button>
+            <button
+              onClick={() => { setTagPickerVote(null); setSelectedTags([]); }}
+              className="text-xs text-slate-500 hover:text-slate-300 px-2 transition-colors"
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Pattern tags */}
       {hasPatterns && (

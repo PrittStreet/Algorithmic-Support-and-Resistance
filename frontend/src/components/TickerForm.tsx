@@ -7,12 +7,14 @@ interface TickerFormProps {
   loading: boolean;
   loadedTickers: Set<string>;
   selectedList: TickerList | null;
+  activeTimeframe: { period: string; interval: string } | null;
+  onClearAll: () => void;
 }
 
 const PERIODS = ['1d', '5d', '1mo', '3mo', '6mo', '1y', '2y', '5y'];
 const INTERVALS = ['1m', '5m', '15m', '30m', '1h', '1d', '1wk'];
 
-export function TickerForm({ onFetch, loading, loadedTickers, selectedList }: TickerFormProps) {
+export function TickerForm({ onFetch, loading, loadedTickers, selectedList, activeTimeframe, onClearAll }: TickerFormProps) {
   const [tickersInput, setTickersInput] = useState('AAPL, MSFT, NVDA, GOOGL');
   const [period, setPeriod] = useState('3mo');
   const [interval, setInterval] = useState('1d');
@@ -22,14 +24,17 @@ export function TickerForm({ onFetch, loading, loadedTickers, selectedList }: Ti
   }, [selectedList]);
 
   const parsedTickers = tickersInput.split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
-  const alreadyLoaded = parsedTickers.filter(t => loadedTickers.has(t));
-  const toFetch = parsedTickers.filter(t => !loadedTickers.has(t));
+  const sameTimeframe = !!activeTimeframe &&
+    activeTimeframe.period === period && activeTimeframe.interval === interval;
+  const alreadyLoaded = sameTimeframe ? parsedTickers.filter(t => loadedTickers.has(t)) : [];
+  const toFetch = parsedTickers.filter(t => !alreadyLoaded.includes(t));
+  const utWillChange = !!activeTimeframe && !sameTimeframe && loadedTickers.size > 0;
 
   const handleFetch = (e: React.FormEvent) => {
     e.preventDefault();
     const tickers = toFetch.length > 0 ? toFetch : parsedTickers;
     if (tickers.length === 0) return;
-    onFetch({ tickers, period, interval });
+    onFetch({ tickers: utWillChange ? parsedTickers : tickers, period, interval });
   };
 
   const inputClass = 'w-full bg-slate-800 border border-slate-600 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-colors';
@@ -37,9 +42,26 @@ export function TickerForm({ onFetch, loading, loadedTickers, selectedList }: Ti
   return (
     <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 mb-4">
       <form onSubmit={handleFetch}>
-        <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest mb-4">
-          Données Yahoo Finance
-        </p>
+        <div className="flex items-center justify-between mb-4">
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-widest">
+            Données Yahoo Finance
+          </p>
+          {activeTimeframe && loadedTickers.size > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-400">
+                Chargé : <span className="text-blue-400 font-mono">{activeTimeframe.interval} · {activeTimeframe.period}</span>
+                <span className="text-slate-500 ml-1">({loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''})</span>
+              </span>
+              <button
+                type="button"
+                onClick={onClearAll}
+                className="text-xs text-slate-500 hover:text-red-400 border border-slate-700 hover:border-red-700 px-2 py-0.5 rounded transition-colors"
+              >
+                Tout décharger
+              </button>
+            </div>
+          )}
+        </div>
         <div className="mb-4">
           <label className="block text-sm font-medium text-slate-400 mb-2">
             Tickers <span className="text-slate-500">(séparés par des virgules)</span>
@@ -73,6 +95,11 @@ export function TickerForm({ onFetch, loading, loadedTickers, selectedList }: Ti
             </select>
           </div>
         </div>
+        {utWillChange && (
+          <p className="text-xs text-amber-400 mb-3">
+            L'UT change ({activeTimeframe!.interval} · {activeTimeframe!.period} → {interval} · {period}) — les données actuelles seront remplacées.
+          </p>
+        )}
         <button
           type="submit"
           disabled={loading}
@@ -80,6 +107,8 @@ export function TickerForm({ onFetch, loading, loadedTickers, selectedList }: Ti
         >
           {loading
             ? 'Chargement...'
+            : utWillChange
+            ? `Charger en ${interval} · ${period}`
             : toFetch.length > 0 && loadedTickers.size > 0
             ? `Fetcher ${toFetch.length} ticker${toFetch.length > 1 ? 's' : ''} manquants`
             : 'Charger les données'}
