@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { TickerForm } from './components/TickerForm';
 import { SRParamsPanel } from './components/SRParamsPanel';
 import { ChartCard } from './components/ChartCard';
@@ -12,7 +12,7 @@ import type { OHLCVBar, TickerResult, FetchParams } from './api';
 import type { AnalysisParams } from './sr';
 import type { TickerList, Session, FeedbackEntry } from './lib/api-storage';
 import { getFeedback, upsertFeedback, removeFeedback, migrateFromLocalStorage } from './lib/api-storage';
-import { buildPreferenceModel, computePreferenceBonus } from './lib/preferences';
+import { buildPreferenceModel, computePreferenceBonus, computePreferenceScore, getTopInfluencingFeatures } from './lib/preferences';
 import './App.css';
 
 function useDebounce<T>(value: T, delay: number): T {
@@ -29,6 +29,26 @@ type PatternFilter = 'all' | 'w_forming' | 'w_confirmed' | 'coil' | 'score';
 type SortMode = 'score' | 'ticker';
 
 export default function App() {
+  const [sidebarWidth, setSidebarWidth] = useState(300);
+  const sidebarWidthRef = useRef(300);
+
+  const startResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startWidth = sidebarWidthRef.current;
+    const onMove = (ev: MouseEvent) => {
+      const w = Math.max(220, Math.min(520, startWidth + ev.clientX - startX));
+      setSidebarWidth(w);
+      sidebarWidthRef.current = w;
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  }, []);
+
   const [ohlcvByTicker, setOhlcvByTicker] = useState<Record<string, OHLCVBar[]>>({});
   const [analysisParams, setAnalysisParams] = useState<AnalysisParams>({
     dif: 1.5,
@@ -219,10 +239,13 @@ export default function App() {
       </header>
 
       <div className="max-w-[1600px] mx-auto px-4 pb-16">
-        <div className="flex gap-5 items-start">
+        <div className="flex gap-0 items-start">
 
           {/* ── Sidebar ── */}
-          <aside className="w-72 shrink-0 sticky top-4 self-start max-h-[calc(100vh-5rem)] overflow-y-auto space-y-3 pb-4 scrollbar-thin">
+          <aside
+            style={{ width: sidebarWidth }}
+            className="shrink-0 sticky top-4 self-start max-h-[calc(100vh-5rem)] overflow-y-auto space-y-3 pb-4 scrollbar-thin"
+          >
             <ListPanel
               selectedId={selectedList?.id ?? null}
               loadedTickers={loadedTickers}
@@ -264,8 +287,14 @@ export default function App() {
             />
           </aside>
 
+          {/* ── Resize handle ── */}
+          <div
+            className="w-1 mx-2 self-stretch shrink-0 cursor-col-resize rounded-full bg-slate-800 hover:bg-blue-500 active:bg-blue-400 transition-colors"
+            onMouseDown={startResize}
+          />
+
           {/* ── Main content ── */}
-          <div className="flex-1 min-w-0">
+          <div className="flex-1 min-w-0 pl-2">
             {loading && (
               <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
                 <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -403,10 +432,9 @@ export default function App() {
                     {sorted.map(r => {
                       const fp = fingerprintByTicker[r.ticker];
                       const vote = feedback.find(f => f.ticker === r.ticker)?.vote ?? null;
-                      const bonus = (preferenceModel && fp)
-                        ? computePreferenceBonus(fp, preferenceModel)
-                        : null;
                       if (!fp) return null;
+                      const prefScore   = (preferenceModel && fp) ? computePreferenceScore(fp, preferenceModel) : null;
+                      const prefTopFeat = (preferenceModel && fp) ? getTopInfluencingFeatures(fp, preferenceModel) : null;
                       return (
                         <ChartCard
                           key={r.ticker}
@@ -418,7 +446,8 @@ export default function App() {
                           isCoiling={r.is_coiling}
                           fingerprint={fp}
                           currentVote={vote}
-                          preferenceBonus={bonus}
+                          preferenceScore={prefScore}
+                          preferenceTopFeatures={prefTopFeat}
                           onFeedback={(v, tags) => handleFeedbackVote(r.ticker, v, tags)}
                           onRemoveFeedback={() => handleRemoveFeedback(r.ticker)}
                         />

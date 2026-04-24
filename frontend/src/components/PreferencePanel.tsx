@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { FeedbackEntry } from '../lib/api-storage';
 import { clearFeedback, removeFeedback } from '../lib/api-storage';
-import { buildPreferenceModel, getFeatureInsights, LIKE_TAGS, DISLIKE_TAGS } from '../lib/preferences';
+import { buildPreferenceModel, getFeatureInsights, LIKE_TAGS, DISLIKE_TAGS, MIN_FEEDBACK } from '../lib/preferences';
 
 interface Props {
   feedback: FeedbackEntry[];
@@ -116,7 +116,7 @@ export function PreferencePanel({ feedback, onFeedbackChange }: Props) {
 
               {!model && (
                 <p className="text-amber-500 text-xs">
-                  Minimum 3 feedbacks pour activer le modèle ({feedback.length}/3).
+                  Minimum {MIN_FEEDBACK} feedback pour activer le modèle ({feedback.length}/{MIN_FEEDBACK}).
                 </p>
               )}
 

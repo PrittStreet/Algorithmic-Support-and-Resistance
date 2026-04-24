@@ -4,6 +4,7 @@ export interface OHLCVBar {
   high: number;
   low: number;
   close: number;
+  volume?: number;
 }
 
 export interface SRLevel {

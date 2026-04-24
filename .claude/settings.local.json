@@ -13,7 +13,9 @@
       "Bash(curl -s http://localhost:8000/api/lists)",
       "Bash(curl -s http://localhost:8000/api/presets)",
       "Bash(curl -s http://localhost:8000/api/feedback)",
-      "Bash(echo \"Exit: $?\")"
+      "Bash(echo \"Exit: $?\")",
+      "Bash(uvicorn main:app --reload --port 8000)",
+      "Bash(curl -s http://localhost:8000/api/ohlcv -X POST -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[],\\\\\"period\\\\\":\\\\\"1d\\\\\",\\\\\"interval\\\\\":\\\\\"1d\\\\\"}\")"
     ]
   }
 }

@@ -124,9 +124,13 @@ def _load_ohlcv_from_db():
         for r in rows:
             ttl = _CACHE_TTL.get(r["interval_val"], 3600)
             if now - r["cached_at"] < ttl:
+                data = json.loads(r["data"])
+                # Skip pre-volume entries (migration guard)
+                if data and isinstance(data[0], dict) and "volume" not in data[0]:
+                    continue
                 _ohlcv_cache[(r["ticker"], r["period"], r["interval_val"])] = {
                     "ts": r["cached_at"],
-                    "data": json.loads(r["data"]),
+                    "data": data,
                 }
                 loaded += 1
         print(f"[DB] Loaded {loaded} cached OHLCV entries from disk")
@@ -138,9 +142,14 @@ _load_ohlcv_from_db()
 
 def _cache_get(ticker: str, period: str, interval: str):
     entry = _ohlcv_cache.get((ticker, period, interval))
-    if entry and time.time() - entry["ts"] < _CACHE_TTL.get(interval, 3600):
-        return entry["data"]
-    return None
+    if not entry or time.time() - entry["ts"] >= _CACHE_TTL.get(interval, 3600):
+        return None
+    data = entry["data"]
+    # Invalidate pre-volume cache entries (migration: old bars have no "volume" key)
+    if data and isinstance(data[0], dict) and "volume" not in data[0]:
+        del _ohlcv_cache[(ticker, period, interval)]
+        return None
+    return data
 
 def _cache_set(ticker: str, period: str, interval: str, data: list):
     ts = int(time.time())
@@ -161,16 +170,22 @@ def _df_to_ohlcv(df: pd.DataFrame) -> list | None:
     df = df.dropna(subset=["Open", "High", "Low", "Close"])
     if len(df) < 3:
         return None
+    has_volume = "Volume" in df.columns
     ohlcv = []
     for ts, row in df.iterrows():
         try:
-            ohlcv.append({
+            bar: dict = {
                 "time":  int(pd.Timestamp(ts).timestamp()),
                 "open":  round(float(row["Open"]),  4),
                 "high":  round(float(row["High"]),  4),
                 "low":   round(float(row["Low"]),   4),
                 "close": round(float(row["Close"]), 4),
-            })
+            }
+            if has_volume:
+                vol = row.get("Volume", 0)
+                if vol and vol > 0:
+                    bar["volume"] = int(vol)
+            ohlcv.append(bar)
         except Exception:
             continue
     return ohlcv if len(ohlcv) >= 3 else None

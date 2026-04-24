@@ -2,12 +2,13 @@ import { useEffect, useRef, useState } from 'react';
 import {
   createChart,
   CandlestickSeries,
+  HistogramSeries,
   ColorType,
   LineStyle,
   type IChartApi,
 } from 'lightweight-charts';
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
-import type { ChartFingerprint } from '../lib/preferences';
+import type { ChartFingerprint, TopFeature } from '../lib/preferences';
 import { LIKE_TAGS, DISLIKE_TAGS } from '../lib/preferences';
 
 interface ChartCardProps {
@@ -19,7 +20,8 @@ interface ChartCardProps {
   isCoiling: boolean;
   fingerprint: ChartFingerprint;
   currentVote: 'like' | 'dislike' | null;
-  preferenceBonus: number | null;
+  preferenceScore: number | null;
+  preferenceTopFeatures: TopFeature[] | null;
   onFeedback: (vote: 'like' | 'dislike', tags: string[]) => void;
   onRemoveFeedback: () => void;
 }
@@ -67,8 +69,11 @@ function PatternTags({ wPatterns, isCoiling }: { wPatterns: WPattern[]; isCoilin
 export function ChartCard({
   ticker, ohlcv, srLevels, wPatterns, score, isCoiling,
   fingerprint: _fingerprint,
-  currentVote, preferenceBonus, onFeedback, onRemoveFeedback,
+  currentVote, preferenceScore, preferenceTopFeatures, onFeedback, onRemoveFeedback,
 }: ChartCardProps) {
+  const prefPct = preferenceScore !== null && preferenceScore !== undefined
+    ? Math.round((preferenceScore - 0.5) * 200)
+    : null;
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const [tagPickerVote, setTagPickerVote] = useState<'like' | 'dislike' | null>(null);
@@ -109,6 +114,26 @@ export function ChartCard({
     });
 
     candles.setData(ohlcv as never);
+
+    // Volume histogram
+    const hasVolume = ohlcv.some(b => b.volume != null && b.volume! > 0);
+    if (hasVolume) {
+      const volSeries = chart.addSeries(HistogramSeries, {
+        priceFormat: { type: 'volume' },
+        priceScaleId: 'volume',
+      });
+      volSeries.priceScale().applyOptions({
+        scaleMargins: { top: 0.85, bottom: 0 },
+      });
+      const volData = ohlcv
+        .filter(b => b.volume != null && b.volume! > 0)
+        .map(b => ({
+          time: b.time,
+          value: b.volume!,
+          color: b.close >= b.open ? 'rgba(34,197,94,0.4)' : 'rgba(239,68,68,0.4)',
+        }));
+      volSeries.setData(volData as never);
+    }
 
     // S/R levels
     srLevels
@@ -197,18 +222,33 @@ export function ChartCard({
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          {/* Preference bonus badge */}
-          {preferenceBonus !== null && preferenceBonus !== 0 && (
-            <span
-              className={`text-xs px-1.5 py-0.5 rounded font-mono font-semibold ${
-                preferenceBonus > 0
+          {/* Preference score badge */}
+          {prefPct !== null && prefPct !== 0 && (
+            <div className="relative group">
+              <span className={`text-xs px-1.5 py-0.5 rounded font-mono font-semibold cursor-help ${
+                prefPct > 0
                   ? 'bg-green-900/50 text-green-400 border border-green-800'
                   : 'bg-red-900/50 text-red-400 border border-red-800'
-              }`}
-              title="Bonus/malus de préférence personnelle"
-            >
-              {preferenceBonus > 0 ? '+' : ''}{preferenceBonus}
-            </span>
+              }`}>
+                {prefPct > 0 ? '+' : ''}{prefPct}%
+              </span>
+              {preferenceTopFeatures && preferenceTopFeatures.length > 0 && (
+                <div className="absolute right-0 top-full mt-1.5 z-20 hidden group-hover:block bg-slate-800 border border-slate-600 rounded-xl p-3 min-w-[210px] shadow-xl pointer-events-none">
+                  <p className="text-xs text-slate-500 uppercase tracking-wider mb-2 font-semibold">Top features</p>
+                  {preferenceTopFeatures.map((f, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 text-xs mb-1.5">
+                      <span className="text-slate-400 truncate">{f.label}</span>
+                      <span className={`font-mono shrink-0 font-semibold ${f.contribution > 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {f.contribution > 0 ? '+' : ''}{Math.round(f.contribution * 100)}
+                      </span>
+                    </div>
+                  ))}
+                  <p className="text-slate-600 text-xs mt-2 border-t border-slate-700 pt-2">
+                    {prefPct > 0 ? 'Setup favorisé par tes préférences' : 'Setup défavorisé par tes préférences'}
+                  </p>
+                </div>
+              )}
+            </div>
           )}
           <ScoreBadge score={score} />
           {/* Like / Dislike buttons */}
