@@ -151,10 +151,11 @@ export default function App() {
       setOhlcvByTicker(byTicker);
       setActiveTimeframe({ period: session.period, interval: session.interval });
     } else {
-      // New-style session: pre-fill the ticker list so user just clicks "Charger"
+      // New-style session: auto-fetch data (OHLCV stripped at save time)
       setOhlcvByTicker({});
       const tickers = session.tickers ?? session.snapshot.map(r => r.ticker);
       setSelectedList({ id: '_restore_', name: session.name, tickers, createdAt: 0 });
+      handleFetch({ tickers, period: session.period, interval: session.interval });
     }
   };
 
@@ -194,169 +195,52 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
-      <header className="border-b border-slate-800 px-6 py-4 mb-8">
-        <div className="max-w-7xl mx-auto">
-          <h1 className="text-xl font-bold tracking-tight">
-            <span className="text-blue-400">S/R</span> Analyzer
-          </h1>
-          <p className="text-slate-500 text-sm mt-0.5">Support &amp; Résistance algorithmiques — Yahoo Finance</p>
+      <header className="border-b border-slate-800 px-4 py-3 mb-5">
+        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
+          <div>
+            <h1 className="text-lg font-bold tracking-tight">
+              <span className="text-blue-400">S/R</span> Analyzer
+            </h1>
+            <p className="text-slate-500 text-xs mt-0.5">Support &amp; Résistance algorithmiques — Yahoo Finance</p>
+          </div>
+          {hasData && (
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span className="font-mono text-blue-400">{activeTimeframe?.interval} · {activeTimeframe?.period}</span>
+              <span className="text-slate-600">·</span>
+              <span>{loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''}</span>
+              {fromCache !== null && (
+                <span className={`px-2 py-0.5 rounded-full ${fromCache ? 'bg-slate-800 text-slate-500' : 'bg-blue-950 text-blue-400'}`}>
+                  {fromCache ? 'cache' : 'fresh'}
+                </span>
+              )}
+            </div>
+          )}
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 pb-16">
-        <ListPanel
-          selectedId={selectedList?.id ?? null}
-          loadedTickers={loadedTickers}
-          onSelect={list => setSelectedList(list)}
-        />
+      <div className="max-w-[1600px] mx-auto px-4 pb-16">
+        <div className="flex gap-5 items-start">
 
-        <TickerForm
-          onFetch={handleFetch}
-          loading={loading}
-          loadedTickers={loadedTickers}
-          selectedList={selectedList}
-          activeTimeframe={activeTimeframe}
-          onClearAll={handleClearAll}
-        />
+          {/* ── Sidebar ── */}
+          <aside className="w-72 shrink-0 sticky top-4 self-start max-h-[calc(100vh-5rem)] overflow-y-auto space-y-3 pb-4 scrollbar-thin">
+            <ListPanel
+              selectedId={selectedList?.id ?? null}
+              loadedTickers={loadedTickers}
+              onSelect={list => setSelectedList(list)}
+            />
 
-        <SessionPanel
-          hasData={hasData}
-          period={currentPeriod}
-          interval={currentInterval}
-          params={analysisParams}
-          results={results}
-          onRestore={handleRestoreSession}
-        />
-
-        <PreferencePanel
-          feedback={feedback}
-          onFeedbackChange={setFeedback}
-        />
-
-        {loading && (
-          <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
-            <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-            Téléchargement en cours…
-          </div>
-        )}
-        {error && (
-          <div className="bg-red-950 border border-red-800 text-red-300 rounded-xl px-4 py-3 mb-6 text-sm">{error}</div>
-        )}
-        {noData && !loading && (
-          <div className="bg-amber-950 border border-amber-800 text-amber-300 rounded-xl px-4 py-3 mb-6 text-sm">
-            Aucune donnée reçue — Yahoo Finance est peut-être temporairement limité. Réessayez dans quelques secondes.
-          </div>
-        )}
-
-        {results.length > 0 && !loading && (
-          <>
-            {/* ── Filter / sort bar ── */}
-            <div className="bg-slate-900 border border-slate-700 rounded-2xl p-4 mb-6 space-y-3">
-
-              {/* Row 1: niveau + tri */}
-              <div className="flex items-center justify-between flex-wrap gap-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-slate-500 uppercase tracking-widest">Niveaux</span>
-                  <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
-                    {([
-                      { key: 'all',        label: 'Tous',  count: results.length },
-                      { key: 'any',        label: 'S/R',   count: withLevels },
-                      { key: 'support',    label: 'Supp',  count: withSupport },
-                      { key: 'resistance', label: 'Rés',   count: withResistance },
-                    ] as const).map(({ key, label, count }) => (
-                      <button
-                        key={key}
-                        onClick={() => setLevelFilter(key)}
-                        className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                          levelFilter === key ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        {label}
-                        <span className={`text-xs px-1 py-0.5 rounded-full ${levelFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                          {count}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-3">
-                  {preferenceModel && (
-                    <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
-                      <button
-                        onClick={() => setScoreMode('raw')}
-                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${scoreMode === 'raw' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                        title="Classement basé uniquement sur le score algorithmique brut"
-                      >
-                        Brut
-                      </button>
-                      <button
-                        onClick={() => setScoreMode('adjusted')}
-                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${scoreMode === 'adjusted' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                        title="Classement tenant compte de tes préférences personnelles"
-                      >
-                        Ajusté ✦
-                      </button>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-widest">Trier</span>
-                    <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1">
-                      <button
-                        onClick={() => setSortMode('score')}
-                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                      >
-                        Score ↓
-                      </button>
-                      <button
-                        onClick={() => setSortMode('ticker')}
-                        className={`px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                      >
-                        A–Z
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Row 2: patterns */}
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs text-slate-500 uppercase tracking-widest">Patterns</span>
-                <div className="flex items-center gap-1 bg-slate-800 rounded-lg p-1 flex-wrap">
-                  {([
-                    { key: 'all',         label: 'Tous',        count: afterLevelFilter.length, color: '' },
-                    { key: 'w_forming',   label: 'W formation', count: wForming,    color: 'text-yellow-400' },
-                    { key: 'w_confirmed', label: 'W confirmé',  count: wConfirmed,  color: 'text-green-400' },
-                    { key: 'coil',        label: 'Coil',        count: coiling,     color: 'text-purple-400' },
-                    { key: 'score',       label: 'Score ≥ 50',  count: highScore,   color: 'text-blue-400' },
-                  ] as const).map(({ key, label, count, color }) => (
-                    <button
-                      key={key}
-                      onClick={() => setPatternFilter(key)}
-                      className={`flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors ${
-                        patternFilter === key
-                          ? 'bg-blue-600 text-white'
-                          : `${color || 'text-slate-400'} hover:text-white`
-                      }`}
-                    >
-                      {label}
-                      <span className={`text-xs px-1 py-0.5 rounded-full ${patternFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                        {count}
-                      </span>
-                    </button>
-                  ))}
-                </div>
-
-                <p className="text-slate-500 text-xs ml-auto">
-                  {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
-                  {fromCache !== null && (
-                    <span className={`ml-2 px-2 py-0.5 rounded-full ${fromCache ? 'bg-slate-800 text-slate-400' : 'bg-blue-950 text-blue-400'}`}>
-                      {fromCache ? 'cache' : 'fresh'}
-                    </span>
-                  )}
-                </p>
-              </div>
-            </div>
+            <TickerForm
+              onFetch={handleFetch}
+              loading={loading}
+              loadedTickers={loadedTickers}
+              selectedList={selectedList}
+              activeTimeframe={activeTimeframe}
+              onClearAll={handleClearAll}
+              period={currentPeriod}
+              interval={currentInterval}
+              onPeriodChange={setCurrentPeriod}
+              onIntervalChange={setCurrentInterval}
+            />
 
             <SRParamsPanel
               params={analysisParams}
@@ -365,42 +249,188 @@ export default function App() {
               onParamsSet={setAnalysisParams}
             />
 
-            {sorted.length === 0 ? (
-              <div className="text-center py-16 text-slate-500">
-                <p className="text-lg mb-2">Aucun résultat pour ce filtre</p>
-                <p className="text-sm">Essayez d'assouplir les paramètres S/R ou de changer de filtre.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {sorted.map(r => {
-                  const fp = fingerprintByTicker[r.ticker];
-                  const vote = feedback.find(f => f.ticker === r.ticker)?.vote ?? null;
-                  const bonus = (preferenceModel && fp)
-                    ? computePreferenceBonus(fp, preferenceModel)
-                    : null;
-                  if (!fp) return null;
-                  return (
-                    <ChartCard
-                      key={r.ticker}
-                      ticker={r.ticker}
-                      ohlcv={r.ohlcv}
-                      srLevels={r.sr_levels}
-                      wPatterns={r.w_patterns}
-                      score={r.score}
-                      isCoiling={r.is_coiling}
-                      fingerprint={fp}
-                      currentVote={vote}
-                      preferenceBonus={bonus}
-                      onFeedback={(v, tags) => handleFeedbackVote(r.ticker, v, tags)}
-                      onRemoveFeedback={() => handleRemoveFeedback(r.ticker)}
-                    />
-                  );
-                })}
+            <SessionPanel
+              hasData={hasData}
+              period={currentPeriod}
+              interval={currentInterval}
+              params={analysisParams}
+              results={results}
+              onRestore={handleRestoreSession}
+            />
+
+            <PreferencePanel
+              feedback={feedback}
+              onFeedbackChange={setFeedback}
+            />
+          </aside>
+
+          {/* ── Main content ── */}
+          <div className="flex-1 min-w-0">
+            {loading && (
+              <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
+                <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+                Téléchargement en cours…
               </div>
             )}
-          </>
-        )}
-      </main>
+            {error && (
+              <div className="bg-red-950 border border-red-800 text-red-300 rounded-xl px-4 py-3 mb-4 text-sm">{error}</div>
+            )}
+            {noData && !loading && (
+              <div className="bg-amber-950 border border-amber-800 text-amber-300 rounded-xl px-4 py-3 mb-4 text-sm">
+                Aucune donnée reçue — Yahoo Finance est peut-être temporairement limité. Réessayez dans quelques secondes.
+              </div>
+            )}
+
+            {!hasData && !loading && !error && !noData && (
+              <div className="flex flex-col items-center justify-center py-32 text-slate-600">
+                <p className="text-lg font-medium mb-1">Aucune donnée chargée</p>
+                <p className="text-sm">Sélectionne une liste ou saisis des tickers dans le panneau gauche, puis clique sur <span className="text-slate-400">Charger les données</span>.</p>
+              </div>
+            )}
+
+            {results.length > 0 && !loading && (
+              <>
+                {/* ── Filter / sort bar ── */}
+                <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3 mb-4 space-y-2.5">
+
+                  {/* Row 1: niveau + tri */}
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs text-slate-500 uppercase tracking-widest">Niveaux</span>
+                      <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                        {([
+                          { key: 'all',        label: 'Tous',  count: results.length },
+                          { key: 'any',        label: 'S/R',   count: withLevels },
+                          { key: 'support',    label: 'Supp',  count: withSupport },
+                          { key: 'resistance', label: 'Rés',   count: withResistance },
+                        ] as const).map(({ key, label, count }) => (
+                          <button
+                            key={key}
+                            onClick={() => setLevelFilter(key)}
+                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                              levelFilter === key ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                            }`}
+                          >
+                            {label}
+                            <span className={`text-xs px-1 py-0.5 rounded-full ${levelFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                              {count}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {preferenceModel && (
+                        <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                          <button
+                            onClick={() => setScoreMode('raw')}
+                            className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${scoreMode === 'raw' ? 'bg-slate-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                            title="Classement basé uniquement sur le score algorithmique brut"
+                          >
+                            Brut
+                          </button>
+                          <button
+                            onClick={() => setScoreMode('adjusted')}
+                            className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${scoreMode === 'adjusted' ? 'bg-purple-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                            title="Classement tenant compte de tes préférences personnelles"
+                          >
+                            Ajusté ✦
+                          </button>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-slate-500 uppercase tracking-widest">Trier</span>
+                        <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                          <button
+                            onClick={() => setSortMode('score')}
+                            className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                          >
+                            Score ↓
+                          </button>
+                          <button
+                            onClick={() => setSortMode('ticker')}
+                            className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                          >
+                            A–Z
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 2: patterns */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs text-slate-500 uppercase tracking-widest">Patterns</span>
+                    <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">
+                      {([
+                        { key: 'all',         label: 'Tous',        count: afterLevelFilter.length, color: '' },
+                        { key: 'w_forming',   label: 'W form.',     count: wForming,    color: 'text-yellow-400' },
+                        { key: 'w_confirmed', label: 'W conf.',     count: wConfirmed,  color: 'text-green-400' },
+                        { key: 'coil',        label: 'Coil',        count: coiling,     color: 'text-purple-400' },
+                        { key: 'score',       label: 'Score ≥ 50',  count: highScore,   color: 'text-blue-400' },
+                      ] as const).map(({ key, label, count, color }) => (
+                        <button
+                          key={key}
+                          onClick={() => setPatternFilter(key)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                            patternFilter === key
+                              ? 'bg-blue-600 text-white'
+                              : `${color || 'text-slate-400'} hover:text-white`
+                          }`}
+                        >
+                          {label}
+                          <span className={`text-xs px-1 py-0.5 rounded-full ${patternFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                            {count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+
+                    <p className="text-slate-500 text-xs ml-auto">
+                      {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
+                    </p>
+                  </div>
+                </div>
+
+                {sorted.length === 0 ? (
+                  <div className="text-center py-16 text-slate-500">
+                    <p className="text-lg mb-2">Aucun résultat pour ce filtre</p>
+                    <p className="text-sm">Essayez d'assouplir les paramètres S/R ou de changer de filtre.</p>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                    {sorted.map(r => {
+                      const fp = fingerprintByTicker[r.ticker];
+                      const vote = feedback.find(f => f.ticker === r.ticker)?.vote ?? null;
+                      const bonus = (preferenceModel && fp)
+                        ? computePreferenceBonus(fp, preferenceModel)
+                        : null;
+                      if (!fp) return null;
+                      return (
+                        <ChartCard
+                          key={r.ticker}
+                          ticker={r.ticker}
+                          ohlcv={r.ohlcv}
+                          srLevels={r.sr_levels}
+                          wPatterns={r.w_patterns}
+                          score={r.score}
+                          isCoiling={r.is_coiling}
+                          fingerprint={fp}
+                          currentVote={vote}
+                          preferenceBonus={bonus}
+                          onFeedback={(v, tags) => handleFeedbackVote(r.ticker, v, tags)}
+                          onRemoveFeedback={() => handleRemoveFeedback(r.ticker)}
+                        />
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

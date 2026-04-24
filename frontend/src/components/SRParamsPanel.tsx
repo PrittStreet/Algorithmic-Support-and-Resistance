@@ -44,7 +44,7 @@ export function SRParamsPanel({ params, hasData, onParamsChange, onParamsSet }: 
         Paramètres S/R
         {hasData && <span className="ml-2 text-blue-400 normal-case font-normal tracking-normal">· live</span>}
       </p>
-      <div className="grid grid-cols-3 gap-4 mb-3">
+      <div className="grid grid-cols-1 gap-3 mb-3">
         <div>
           <label className="block text-xs font-medium text-slate-400 mb-1.5">Tolérance <span className="text-slate-500">(%)</span></label>
           <input type="number" value={difStr} onChange={e => handleDif(e.target.value)}

@@ -16,7 +16,7 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
   const [sessions, setSessions] = useState<Session[]>([]);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -52,7 +52,7 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
   });
 
   return (
-    <div className="bg-slate-900 border border-slate-700 rounded-2xl mb-8 overflow-hidden">
+    <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
       <button
         className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/50 transition-colors"
         onClick={() => setOpen(o => !o)}

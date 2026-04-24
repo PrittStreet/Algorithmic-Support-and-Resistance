@@ -45,7 +45,7 @@ export function PreferencePanel({ feedback, onFeedbackChange }: Props) {
   const insights = model ? getFeatureInsights(model) : [];
 
   return (
-    <div className="bg-slate-900 border border-slate-700 rounded-2xl mb-4 overflow-hidden">
+    <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
       <button
         className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/50 transition-colors"
         onClick={() => setOpen(o => !o)}

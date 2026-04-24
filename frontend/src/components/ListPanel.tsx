@@ -51,7 +51,7 @@ export function ListPanel({ selectedId, loadedTickers, onSelect }: Props) {
   };
 
   return (
-    <div className="bg-slate-900 border border-slate-700 rounded-2xl mb-4 overflow-hidden">
+    <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
       <button
         className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/50 transition-colors"
         onClick={() => setOpen(o => !o)}
@@ -61,7 +61,7 @@ export function ListPanel({ selectedId, loadedTickers, onSelect }: Props) {
           {lists.length > 0 && (
             <span className="text-xs bg-slate-700 text-slate-400 px-2 py-0.5 rounded-full">{lists.length}</span>
           )}
-          {selectedId && (
+          {selectedId && !selectedId.startsWith('_') && (
             <span className="text-xs text-blue-400">
               · {lists.find(l => l.id === selectedId)?.name ?? ''}
             </span>
