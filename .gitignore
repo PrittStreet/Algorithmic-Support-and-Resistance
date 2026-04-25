@@ -1,0 +1,42 @@
+# ── Python ───────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / Frontend ──────────────────────────────────────
+node_modules/
+frontend/dist/
+backend/static/
+*.log
+.npm/
+.eslintcache
+.vite/
+
+# ── Base SQLite (cache OHLCV + données user) ─────────────
+backend/sr_data.db
+backend/sr_data.db-journal
+backend/sr_data.db-wal
+backend/sr_data.db-shm
+
+# ── Environnements ──────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── OS / IDE ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.vscode/
+!.vscode/settings.json
+.idea/
+
+# ── Perso ───────────────────────────────────────────────
+PERSO

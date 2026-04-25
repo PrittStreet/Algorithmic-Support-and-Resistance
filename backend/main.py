@@ -1,18 +1,45 @@
 import time
 import asyncio
 import json
+import re
 import sqlite3
 import uuid
 from pathlib import Path
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 import yfinance as yf
 import pandas as pd
-import numpy as np
 from typing import List, Optional, Any
 
 app = FastAPI(title="S/R Analyzer")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Validation constants
+_TICKER_RE = re.compile(r"^[A-Z0-9.\^\-]{1,10}$")
+_MAX_TICKERS_PER_REQUEST = 500
+_MAX_NAME_LEN = 80
+_VALID_PERIODS   = {"1d","5d","1mo","3mo","6mo","1y","2y","5y","10y","ytd","max"}
+_VALID_INTERVALS = {"1m","2m","5m","15m","30m","60m","90m","1h","1d","5d","1wk","1mo","3mo"}
+
+def _norm_tickers(tickers: List[str]) -> List[str]:
+    out = []
+    for t in tickers:
+        if not isinstance(t, str):
+            continue
+        u = t.strip().upper()
+        if u and _TICKER_RE.match(u):
+            out.append(u)
+    if len(out) > _MAX_TICKERS_PER_REQUEST:
+        raise HTTPException(400, f"Trop de tickers (max {_MAX_TICKERS_PER_REQUEST})")
+    return out
 
 # ── SQLite ─────────────────────────────────────────────────────────────────────
 DB_PATH = Path(__file__).parent / "sr_data.db"
@@ -61,7 +88,8 @@ def _db_init():
                 vote        TEXT NOT NULL,
                 tags        TEXT NOT NULL,
                 fingerprint TEXT NOT NULL,
-                created_at  INTEGER NOT NULL
+                created_at  INTEGER NOT NULL,
+                annotation  TEXT
             );
             CREATE TABLE IF NOT EXISTS ohlcv_cache (
                 ticker       TEXT NOT NULL,
@@ -71,7 +99,19 @@ def _db_init():
                 cached_at    INTEGER NOT NULL,
                 PRIMARY KEY (ticker, period, interval_val)
             );
+            CREATE TABLE IF NOT EXISTS favorites (
+                ticker       TEXT NOT NULL,
+                period       TEXT NOT NULL,
+                interval_val TEXT NOT NULL,
+                note         TEXT,
+                created_at   INTEGER NOT NULL,
+                PRIMARY KEY (ticker, period, interval_val)
+            );
         """)
+        # Migration: add annotation column to pre-existing feedback tables
+        cols = [r["name"] for r in conn.execute("PRAGMA table_info(feedback)").fetchall()]
+        if "annotation" not in cols:
+            conn.execute("ALTER TABLE feedback ADD COLUMN annotation TEXT")
         count = conn.execute("SELECT COUNT(*) FROM ticker_lists").fetchone()[0]
         if count == 0:
             conn.execute("INSERT INTO ticker_lists VALUES (?,?,?,?)",
@@ -113,27 +153,38 @@ _CACHE_TTL = {
 _ohlcv_cache: dict = {}
 
 def _load_ohlcv_from_db():
-    """Populate in-memory cache from SQLite on startup."""
+    """Populate in-memory cache from SQLite on startup; purge expired rows from disk."""
     try:
         with _db_connect() as conn:
             rows = conn.execute(
                 "SELECT ticker, period, interval_val, data, cached_at FROM ohlcv_cache"
             ).fetchall()
-        now = time.time()
-        loaded = 0
-        for r in rows:
-            ttl = _CACHE_TTL.get(r["interval_val"], 3600)
-            if now - r["cached_at"] < ttl:
+            now = time.time()
+            loaded = 0
+            expired: list[tuple] = []
+            for r in rows:
+                ttl = _CACHE_TTL.get(r["interval_val"], 3600)
+                age = now - r["cached_at"]
+                if age >= ttl:
+                    expired.append((r["ticker"], r["period"], r["interval_val"]))
+                    continue
                 data = json.loads(r["data"])
                 # Skip pre-volume entries (migration guard)
                 if data and isinstance(data[0], dict) and "volume" not in data[0]:
+                    expired.append((r["ticker"], r["period"], r["interval_val"]))
                     continue
                 _ohlcv_cache[(r["ticker"], r["period"], r["interval_val"])] = {
                     "ts": r["cached_at"],
                     "data": data,
                 }
                 loaded += 1
-        print(f"[DB] Loaded {loaded} cached OHLCV entries from disk")
+            if expired:
+                conn.executemany(
+                    "DELETE FROM ohlcv_cache WHERE ticker=? AND period=? AND interval_val=?",
+                    expired,
+                )
+                conn.commit()
+        print(f"[DB] Loaded {loaded} cached OHLCV entries, purged {len(expired)} expired")
     except Exception as e:
         print(f"[DB] Failed to load OHLCV cache: {e}")
 
@@ -225,15 +276,39 @@ def _download_batch_blocking(tickers: list, period: str, interval: str, max_retr
     return {}
 
 
+# ── Health ────────────────────────────────────────────────────────────────────
+@app.get("/api/health")
+async def health():
+    return {
+        "ok": True,
+        "cache_entries": len(_ohlcv_cache),
+        "ts": int(time.time()),
+    }
+
+
 # ── OHLCV API ─────────────────────────────────────────────────────────────────
 class OhlcvRequest(BaseModel):
-    tickers: List[str]
+    tickers: List[str] = Field(..., max_length=_MAX_TICKERS_PER_REQUEST)
     period: str = "3mo"
     interval: str = "1d"
 
+    @field_validator("period")
+    @classmethod
+    def _check_period(cls, v: str) -> str:
+        if v not in _VALID_PERIODS:
+            raise ValueError(f"période invalide: {v}")
+        return v
+
+    @field_validator("interval")
+    @classmethod
+    def _check_interval(cls, v: str) -> str:
+        if v not in _VALID_INTERVALS:
+            raise ValueError(f"intervalle invalide: {v}")
+        return v
+
 @app.post("/api/ohlcv")
 async def fetch_ohlcv(req: OhlcvRequest):
-    tickers = [t.strip().upper() for t in req.tickers if t.strip()]
+    tickers = _norm_tickers(req.tickers)
     cached_results, to_fetch = {}, []
     for ticker in tickers:
         cached = _cache_get(ticker, req.period, req.interval)
@@ -259,12 +334,12 @@ async def fetch_ohlcv(req: OhlcvRequest):
 
 # ── Lists API ─────────────────────────────────────────────────────────────────
 class ListBody(BaseModel):
-    name: str
-    tickers: List[str]
+    name: str = Field(..., min_length=1, max_length=_MAX_NAME_LEN)
+    tickers: List[str] = Field(..., max_length=_MAX_TICKERS_PER_REQUEST)
 
 class ListPatch(BaseModel):
-    name: Optional[str] = None
-    tickers: Optional[List[str]] = None
+    name: Optional[str] = Field(None, min_length=1, max_length=_MAX_NAME_LEN)
+    tickers: Optional[List[str]] = Field(None, max_length=_MAX_TICKERS_PER_REQUEST)
 
 @app.get("/api/lists")
 async def get_lists():
@@ -274,7 +349,8 @@ async def get_lists():
 
 @app.post("/api/lists", status_code=201)
 async def create_list(body: ListBody):
-    item = {"id": _uid(), "name": body.name, "tickers": body.tickers, "createdAt": int(time.time() * 1000)}
+    tickers = _norm_tickers(body.tickers)
+    item = {"id": _uid(), "name": body.name.strip(), "tickers": tickers, "createdAt": int(time.time() * 1000)}
     await _db_execute("INSERT INTO ticker_lists VALUES (?,?,?,?)",
                       (item["id"], item["name"], json.dumps(item["tickers"]), item["createdAt"]))
     return item
@@ -284,8 +360,8 @@ async def update_list(list_id: str, body: ListPatch):
     row = await _db_fetchone("SELECT * FROM ticker_lists WHERE id=?", (list_id,))
     if not row:
         raise HTTPException(404)
-    name    = body.name    if body.name    is not None else row["name"]
-    tickers = body.tickers if body.tickers is not None else json.loads(row["tickers"])
+    name    = body.name.strip() if body.name is not None else row["name"]
+    tickers = _norm_tickers(body.tickers) if body.tickers is not None else json.loads(row["tickers"])
     await _db_execute("UPDATE ticker_lists SET name=?, tickers=? WHERE id=?",
                       (name, json.dumps(tickers), list_id))
     return {"ok": True}
@@ -298,7 +374,7 @@ async def delete_list(list_id: str):
 
 # ── Presets API ───────────────────────────────────────────────────────────────
 class PresetBody(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=_MAX_NAME_LEN)
     params: dict
 
 @app.get("/api/presets")
@@ -322,12 +398,26 @@ async def delete_preset(preset_id: str):
 
 # ── Sessions API ──────────────────────────────────────────────────────────────
 class SessionBody(BaseModel):
-    name: str
+    name: str = Field(..., min_length=1, max_length=_MAX_NAME_LEN)
     period: str
     interval: str
     params: dict
-    tickers: List[str]
+    tickers: List[str] = Field(..., max_length=_MAX_TICKERS_PER_REQUEST)
     snapshot: List[Any]
+
+    @field_validator("period")
+    @classmethod
+    def _check_period(cls, v: str) -> str:
+        if v not in _VALID_PERIODS:
+            raise ValueError(f"période invalide: {v}")
+        return v
+
+    @field_validator("interval")
+    @classmethod
+    def _check_interval(cls, v: str) -> str:
+        if v not in _VALID_INTERVALS:
+            raise ValueError(f"intervalle invalide: {v}")
+        return v
 
 @app.get("/api/sessions")
 async def get_sessions():
@@ -365,10 +455,26 @@ async def delete_session(session_id: str):
 
 # ── Feedback API ──────────────────────────────────────────────────────────────
 class FeedbackBody(BaseModel):
-    ticker: str
+    ticker: str = Field(..., min_length=1, max_length=10)
     vote: str
-    tags: List[str]
+    tags: List[str] = Field(default_factory=list, max_length=20)
     fingerprint: dict
+    annotation: Optional[dict] = None
+
+    @field_validator("vote")
+    @classmethod
+    def _check_vote(cls, v: str) -> str:
+        if v not in ("like", "dislike"):
+            raise ValueError("vote doit être 'like' ou 'dislike'")
+        return v
+
+    @field_validator("ticker")
+    @classmethod
+    def _check_ticker(cls, v: str) -> str:
+        u = v.strip().upper()
+        if not _TICKER_RE.match(u):
+            raise ValueError(f"ticker invalide: {v}")
+        return u
 
 @app.get("/api/feedback")
 async def get_feedback():
@@ -378,6 +484,7 @@ async def get_feedback():
         "tags": json.loads(r["tags"]),
         "fingerprint": json.loads(r["fingerprint"]),
         "createdAt": r["created_at"],
+        "annotation": json.loads(r["annotation"]) if r["annotation"] else None,
     } for r in rows]
 
 @app.post("/api/feedback", status_code=201)
@@ -386,11 +493,13 @@ async def upsert_feedback(body: FeedbackBody):
         "id": _uid(), "ticker": body.ticker.upper(), "vote": body.vote,
         "tags": body.tags, "fingerprint": body.fingerprint,
         "createdAt": int(time.time() * 1000),
+        "annotation": body.annotation,
     }
     await _db_execute(
-        "INSERT OR REPLACE INTO feedback VALUES (?,?,?,?,?,?)",
+        "INSERT OR REPLACE INTO feedback VALUES (?,?,?,?,?,?,?)",
         (item["id"], item["ticker"], item["vote"],
-         json.dumps(item["tags"]), json.dumps(item["fingerprint"]), item["createdAt"])
+         json.dumps(item["tags"]), json.dumps(item["fingerprint"]), item["createdAt"],
+         json.dumps(item["annotation"]) if item["annotation"] else None)
     )
     return item
 
@@ -402,6 +511,78 @@ async def delete_feedback(ticker: str):
 @app.delete("/api/feedback")
 async def clear_feedback():
     await _db_execute("DELETE FROM feedback")
+    return {"ok": True}
+
+
+# ── Favorites API ─────────────────────────────────────────────────────────────
+class FavoriteBody(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=10)
+    period: str
+    interval: str
+    note: Optional[str] = Field(None, max_length=200)
+
+    @field_validator("ticker")
+    @classmethod
+    def _check_ticker(cls, v: str) -> str:
+        u = v.strip().upper()
+        if not _TICKER_RE.match(u):
+            raise ValueError(f"ticker invalide: {v}")
+        return u
+
+    @field_validator("period")
+    @classmethod
+    def _check_period(cls, v: str) -> str:
+        if v not in _VALID_PERIODS:
+            raise ValueError(f"période invalide: {v}")
+        return v
+
+    @field_validator("interval")
+    @classmethod
+    def _check_interval(cls, v: str) -> str:
+        if v not in _VALID_INTERVALS:
+            raise ValueError(f"intervalle invalide: {v}")
+        return v
+
+class FavoriteNotePatch(BaseModel):
+    note: Optional[str] = Field(None, max_length=200)
+
+@app.get("/api/favorites")
+async def get_favorites():
+    rows = await _db_fetchall("SELECT * FROM favorites ORDER BY created_at DESC")
+    return [{
+        "ticker": r["ticker"], "period": r["period"], "interval": r["interval_val"],
+        "note": r["note"], "createdAt": r["created_at"],
+    } for r in rows]
+
+@app.post("/api/favorites", status_code=201)
+async def upsert_favorite(body: FavoriteBody):
+    item = {
+        "ticker": body.ticker, "period": body.period, "interval": body.interval,
+        "note": body.note, "createdAt": int(time.time() * 1000),
+    }
+    await _db_execute(
+        "INSERT OR REPLACE INTO favorites VALUES (?,?,?,?,?)",
+        (item["ticker"], item["period"], item["interval"], item["note"], item["createdAt"])
+    )
+    return item
+
+@app.patch("/api/favorites/{ticker}/{period}/{interval}")
+async def update_favorite_note(ticker: str, period: str, interval: str, body: FavoriteNotePatch):
+    ticker = ticker.upper()
+    if not _TICKER_RE.match(ticker) or period not in _VALID_PERIODS or interval not in _VALID_INTERVALS:
+        raise HTTPException(400, "clé invalide")
+    await _db_execute(
+        "UPDATE favorites SET note=? WHERE ticker=? AND period=? AND interval_val=?",
+        (body.note, ticker, period, interval),
+    )
+    return {"ok": True}
+
+@app.delete("/api/favorites/{ticker}/{period}/{interval}")
+async def delete_favorite(ticker: str, period: str, interval: str):
+    await _db_execute(
+        "DELETE FROM favorites WHERE ticker=? AND period=? AND interval_val=?",
+        (ticker.upper(), period, interval),
+    )
     return {"ok": True}
 
 
@@ -450,12 +631,14 @@ async def migrate(body: MigrateBody):
                 except Exception: pass
             for item in body.feedback:
                 try:
-                    conn.execute("INSERT OR IGNORE INTO feedback VALUES (?,?,?,?,?,?)",
+                    ann = item.get("annotation")
+                    conn.execute("INSERT OR IGNORE INTO feedback VALUES (?,?,?,?,?,?,?)",
                                  (item["id"], item.get("ticker", "").upper(),
                                   item.get("vote", "like"),
                                   json.dumps(item.get("tags", [])),
                                   json.dumps(item.get("fingerprint", {})),
-                                  item.get("createdAt", 0)))
+                                  item.get("createdAt", 0),
+                                  json.dumps(ann) if ann else None))
                     inserted += 1
                 except Exception: pass
             conn.commit()

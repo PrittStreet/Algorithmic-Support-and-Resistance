@@ -6,10 +6,14 @@ import {
   ColorType,
   LineStyle,
   type IChartApi,
+  type ISeriesApi,
+  type IPriceLine,
+  type Time,
 } from 'lightweight-charts';
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
-import type { ChartFingerprint, TopFeature } from '../lib/preferences';
+import type { TopFeature } from '../lib/preferences';
 import { LIKE_TAGS, DISLIKE_TAGS } from '../lib/preferences';
+import type { RoiAnnotation } from '../lib/api-storage';
 
 interface ChartCardProps {
   ticker: string;
@@ -18,12 +22,14 @@ interface ChartCardProps {
   wPatterns: WPattern[];
   score: BreakoutScore;
   isCoiling: boolean;
-  fingerprint: ChartFingerprint;
   currentVote: 'like' | 'dislike' | null;
   preferenceScore: number | null;
   preferenceTopFeatures: TopFeature[] | null;
-  onFeedback: (vote: 'like' | 'dislike', tags: string[]) => void;
+  isFavorite: boolean;
+  annotation: RoiAnnotation | null;
+  onFeedback: (vote: 'like' | 'dislike', tags: string[], annotation?: RoiAnnotation | null) => void;
   onRemoveFeedback: () => void;
+  onToggleFavorite: () => void;
 }
 
 function ScoreBadge({ score }: { score: BreakoutScore }) {
@@ -68,19 +74,42 @@ function PatternTags({ wPatterns, isCoiling }: { wPatterns: WPattern[]; isCoilin
 
 export function ChartCard({
   ticker, ohlcv, srLevels, wPatterns, score, isCoiling,
-  fingerprint: _fingerprint,
-  currentVote, preferenceScore, preferenceTopFeatures, onFeedback, onRemoveFeedback,
+  currentVote, preferenceScore, preferenceTopFeatures, isFavorite, annotation,
+  onFeedback, onRemoveFeedback, onToggleFavorite,
 }: ChartCardProps) {
   const prefPct = preferenceScore !== null && preferenceScore !== undefined
     ? Math.round((preferenceScore - 0.5) * 200)
     : null;
+  const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<IChartApi | null>(null);
+  const candlesRef = useRef<ISeriesApi<'Candlestick'> | null>(null);
+  const roiLinesRef = useRef<IPriceLine[]>([]);
   const [tagPickerVote, setTagPickerVote] = useState<'like' | 'dislike' | null>(null);
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
+  const [visible, setVisible] = useState(false);
+  const [draftAnnotation, setDraftAnnotation] = useState<RoiAnnotation | null>(null);
+  const [drawing, setDrawing] = useState(false);
+  const [firstClick, setFirstClick] = useState<{ t: number; p: number } | null>(null);
+
+  const activeAnnotation = draftAnnotation ?? annotation ?? null;
+
+  // Lazy-render: only instantiate lightweight-charts when scrolled into view
+  useEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const io = new IntersectionObserver(
+      entries => {
+        for (const e of entries) setVisible(e.isIntersecting);
+      },
+      { rootMargin: '400px 0px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, []);
 
   useEffect(() => {
-    if (!containerRef.current) return;
+    if (!visible || !containerRef.current) return;
 
     const chart = createChart(containerRef.current, {
       width: containerRef.current.clientWidth,
@@ -112,6 +141,7 @@ export function ChartCard({
       wickUpColor: '#22c55e',
       wickDownColor: '#ef4444',
     });
+    candlesRef.current = candles;
 
     candles.setData(ohlcv as never);
 
@@ -170,8 +200,57 @@ export function ChartCard({
     });
     ro.observe(containerRef.current);
 
-    return () => { ro.disconnect(); chart.remove(); };
-  }, [ohlcv, srLevels, wPatterns]);
+    return () => {
+      ro.disconnect();
+      chart.remove();
+      chartRef.current = null;
+      candlesRef.current = null;
+      roiLinesRef.current = [];
+    };
+  }, [visible, ohlcv, srLevels, wPatterns]);
+
+  // Draw/remove ROI price lines whenever the active annotation changes
+  useEffect(() => {
+    const candles = candlesRef.current;
+    if (!candles) return;
+    for (const l of roiLinesRef.current) candles.removePriceLine(l);
+    roiLinesRef.current = [];
+    if (!activeAnnotation) return;
+    const pTop = Math.max(activeAnnotation.p1, activeAnnotation.p2);
+    const pBot = Math.min(activeAnnotation.p1, activeAnnotation.p2);
+    const color = currentVote === 'like' ? '#facc15' : '#fb923c';
+    roiLinesRef.current.push(candles.createPriceLine({
+      price: pTop, color, lineWidth: 2, lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true, title: 'ROI haut',
+    }));
+    roiLinesRef.current.push(candles.createPriceLine({
+      price: pBot, color, lineWidth: 2, lineStyle: LineStyle.Dashed,
+      axisLabelVisible: true, title: 'ROI bas',
+    }));
+  }, [activeAnnotation, currentVote, visible]);
+
+  // Capture clicks while in drawing mode → 2 clicks = annotation
+  useEffect(() => {
+    const chart = chartRef.current;
+    const candles = candlesRef.current;
+    if (!chart || !candles || !drawing) return;
+    const handler = (param: { time?: Time; point?: { x: number; y: number } }) => {
+      if (!param.point || !param.time) return;
+      const price = candles.coordinateToPrice(param.point.y);
+      if (price == null) return;
+      const t = typeof param.time === 'number' ? param.time : 0;
+      if (!t) return;
+      if (!firstClick) {
+        setFirstClick({ t, p: price });
+      } else {
+        setDraftAnnotation({ type: 'roi', t1: firstClick.t, t2: t, p1: firstClick.p, p2: price });
+        setFirstClick(null);
+        setDrawing(false);
+      }
+    };
+    chart.subscribeClick(handler);
+    return () => chart.unsubscribeClick(handler);
+  }, [drawing, firstClick]);
 
   const supports = srLevels.filter(l => l.type === 'support');
   const resistances = srLevels.filter(l => l.type === 'resistance');
@@ -183,9 +262,13 @@ export function ChartCard({
       onRemoveFeedback();
       setTagPickerVote(null);
       setSelectedTags([]);
+      setDraftAnnotation(null);
+      setDrawing(false);
+      setFirstClick(null);
     } else {
       setTagPickerVote(vote);
       setSelectedTags([]);
+      setDraftAnnotation(null);
     }
   };
 
@@ -195,14 +278,24 @@ export function ChartCard({
 
   const handleConfirmVote = () => {
     if (!tagPickerVote) return;
-    onFeedback(tagPickerVote, selectedTags);
+    onFeedback(tagPickerVote, selectedTags, draftAnnotation ?? annotation ?? null);
     setTagPickerVote(null);
     setSelectedTags([]);
+    setDraftAnnotation(null);
+    setDrawing(false);
+    setFirstClick(null);
+  };
+
+  const handleCancelDraw = () => {
+    setDrawing(false);
+    setFirstClick(null);
+    setDraftAnnotation(null);
   };
 
   const activeTags = tagPickerVote === 'like' ? LIKE_TAGS : DISLIKE_TAGS;
 
   const borderClass =
+    isFavorite                ? 'border-yellow-500/80 shadow-[0_0_0_1px_rgba(234,179,8,0.25)]' :
     currentVote === 'like'    ? 'border-green-600/70' :
     currentVote === 'dislike' ? 'border-red-600/70' :
     wPatterns.some(w => w.confirmed) ? 'border-green-700/50' :
@@ -211,7 +304,7 @@ export function ChartCard({
                                        'border-slate-700';
 
   return (
-    <div className={`bg-slate-900 border rounded-2xl p-4 hover:border-slate-500 transition-colors ${borderClass}`}>
+    <div ref={cardRef} className={`bg-slate-900 border rounded-2xl p-4 hover:border-slate-500 transition-colors ${borderClass}`}>
       {/* Header */}
       <div className="flex items-start justify-between mb-2 gap-2">
         <div className="min-w-0">
@@ -251,6 +344,16 @@ export function ChartCard({
             </div>
           )}
           <ScoreBadge score={score} />
+          {/* Favorite toggle */}
+          <button
+            onClick={onToggleFavorite}
+            className={`text-sm px-1.5 py-1 rounded-lg transition-colors ${
+              isFavorite
+                ? 'text-yellow-400 bg-yellow-900/30 hover:bg-yellow-900/50'
+                : 'text-slate-500 hover:text-yellow-400 hover:bg-slate-800'
+            }`}
+            title={isFavorite ? 'Retirer des favoris' : 'Ajouter aux favoris'}
+          >{isFavorite ? '★' : '☆'}</button>
           {/* Like / Dislike buttons */}
           <button
             onClick={() => handleVote('like')}
@@ -297,6 +400,47 @@ export function ChartCard({
               </button>
             ))}
           </div>
+          {/* Annotation ROI */}
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
+            {!drawing && !draftAnnotation && (
+              <button
+                type="button"
+                onClick={() => { setDrawing(true); setFirstClick(null); }}
+                className="text-xs bg-slate-700 hover:bg-slate-600 text-slate-200 px-2 py-1 rounded-lg transition-colors"
+                title="Dessiner une zone d'intérêt sur le chart (2 clics)"
+              >
+                ✏ Dessiner zone
+              </button>
+            )}
+            {drawing && (
+              <>
+                <span className="text-xs text-yellow-400 font-medium">
+                  {firstClick ? '2e clic : coin opposé' : '1er clic : coin de la zone'}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleCancelDraw}
+                  className="text-xs text-slate-500 hover:text-slate-300 px-2 transition-colors"
+                >Annuler</button>
+              </>
+            )}
+            {!drawing && draftAnnotation && (
+              <>
+                <span className="text-xs text-yellow-400">Zone dessinée ✓</span>
+                <button
+                  type="button"
+                  onClick={() => setDraftAnnotation(null)}
+                  className="text-xs text-slate-500 hover:text-red-400 px-2 transition-colors"
+                >Effacer</button>
+                <button
+                  type="button"
+                  onClick={() => { setDraftAnnotation(null); setDrawing(true); setFirstClick(null); }}
+                  className="text-xs text-slate-500 hover:text-slate-300 px-2 transition-colors"
+                >Redessiner</button>
+              </>
+            )}
+          </div>
+
           <div className="flex gap-2">
             <button
               onClick={handleConfirmVote}
@@ -307,7 +451,7 @@ export function ChartCard({
               Valider
             </button>
             <button
-              onClick={() => { setTagPickerVote(null); setSelectedTags([]); }}
+              onClick={() => { setTagPickerVote(null); setSelectedTags([]); setDraftAnnotation(null); setDrawing(false); setFirstClick(null); }}
               className="text-xs text-slate-500 hover:text-slate-300 px-2 transition-colors"
             >
               Annuler
@@ -341,7 +485,16 @@ export function ChartCard({
         </div>
       )}
 
-      <div ref={containerRef} />
+      <div
+        ref={containerRef}
+        style={{ minHeight: 320, cursor: drawing ? 'crosshair' : undefined }}
+      >
+        {!visible && (
+          <div className="h-[320px] flex items-center justify-center text-slate-700 text-xs">
+            ◌
+          </div>
+        )}
+      </div>
     </div>
   );
 }

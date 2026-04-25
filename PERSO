@@ -1,5 +1,17 @@
-npm run build
+Lancer les serveurs
+Terminal 1 — Backend :
+cd "d:/OneDrive/Documents/VS CODE/Support et resitance/Algorithmic-Support-and-Resistance/backend"
+python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 
-et 
 
-uvicorn main:app --reload --port 8000
+Terminal 2 — Frontend :
+cd "d:/OneDrive/Documents/VS CODE/Support et resitance/Algorithmic-Support-and-Resistance/frontend"
+npm run dev
+
+
+Arrêter les serveurs
+Dans chaque terminal : Ctrl + C
+
+Redémarrer
+Ctrl + C dans le terminal concerné
+Relancer la commande correspondante

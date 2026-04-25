@@ -5,13 +5,15 @@ import { ChartCard } from './components/ChartCard';
 import { ListPanel } from './components/ListPanel';
 import { SessionPanel } from './components/SessionPanel';
 import { PreferencePanel } from './components/PreferencePanel';
+import { FavoritesPanel } from './components/FavoritesPanel';
 import { fetchOhlcv } from './api';
 import { analyzeOhlcv } from './sr';
 import type { ChartFingerprint } from './sr';
 import type { OHLCVBar, TickerResult, FetchParams } from './api';
 import type { AnalysisParams } from './sr';
-import type { TickerList, Session, FeedbackEntry } from './lib/api-storage';
-import { getFeedback, upsertFeedback, removeFeedback, migrateFromLocalStorage } from './lib/api-storage';
+import type { TickerList, Session, FeedbackEntry, Favorite, RoiAnnotation } from './lib/api-storage';
+import { getFeedback, upsertFeedback, removeFeedback, migrateFromLocalStorage,
+         getFavorites, upsertFavorite, removeFavorite, favoriteKey } from './lib/api-storage';
 import { buildPreferenceModel, computePreferenceBonus, computePreferenceScore, getTopInfluencingFeatures } from './lib/preferences';
 import './App.css';
 
@@ -25,7 +27,7 @@ function useDebounce<T>(value: T, delay: number): T {
 }
 
 type LevelFilter = 'all' | 'any' | 'support' | 'resistance';
-type PatternFilter = 'all' | 'w_forming' | 'w_confirmed' | 'coil' | 'score';
+type PatternFilter = 'all' | 'w_forming' | 'w_confirmed' | 'coil' | 'score' | 'favorites';
 type SortMode = 'score' | 'ticker';
 
 export default function App() {
@@ -36,12 +38,19 @@ export default function App() {
     e.preventDefault();
     const startX = e.clientX;
     const startWidth = sidebarWidthRef.current;
+    let pending: number | null = null;
+    let nextW = startWidth;
     const onMove = (ev: MouseEvent) => {
-      const w = Math.max(220, Math.min(520, startWidth + ev.clientX - startX));
-      setSidebarWidth(w);
-      sidebarWidthRef.current = w;
+      nextW = Math.max(220, Math.min(520, startWidth + ev.clientX - startX));
+      if (pending !== null) return;
+      pending = requestAnimationFrame(() => {
+        setSidebarWidth(nextW);
+        sidebarWidthRef.current = nextW;
+        pending = null;
+      });
     };
     const onUp = () => {
+      if (pending !== null) cancelAnimationFrame(pending);
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
     };
@@ -71,14 +80,60 @@ export default function App() {
   const [activeTimeframe, setActiveTimeframe] = useState<{ period: string; interval: string } | null>(null);
 
   const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
+  const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [fingerprintByTicker, setFingerprintByTicker] = useState<Record<string, ChartFingerprint>>({});
   const [scoreMode, setScoreMode] = useState<'raw' | 'adjusted'>('raw');
+  const [missingTickers, setMissingTickers] = useState<string[]>([]);
 
   const debouncedParams = useDebounce(analysisParams, 300);
+  const fetchAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => fetchAbortRef.current?.abort(), []);
 
   useEffect(() => {
-    migrateFromLocalStorage().then(() => getFeedback().then(setFeedback));
+    migrateFromLocalStorage().then(() => {
+      getFeedback().then(setFeedback);
+      getFavorites().then(setFavorites);
+    });
   }, []);
+
+  const favoriteSet = useMemo(() => {
+    const s = new Set<string>();
+    for (const f of favorites) s.add(favoriteKey(f));
+    return s;
+  }, [favorites]);
+
+  const isFavoriteNow = (ticker: string): boolean => {
+    if (!activeTimeframe) return false;
+    return favoriteSet.has(favoriteKey({ ticker, period: activeTimeframe.period, interval: activeTimeframe.interval }));
+  };
+
+  const handleLoadFavorite = (fav: Favorite) => {
+    setCurrentPeriod(fav.period);
+    setCurrentInterval(fav.interval);
+    setSelectedList({ id: '_fav_', name: `★ ${fav.ticker}`, tickers: [fav.ticker], createdAt: 0 });
+    handleFetch({ tickers: [fav.ticker], period: fav.period, interval: fav.interval });
+  };
+
+  const handleToggleFavorite = async (ticker: string) => {
+    if (!activeTimeframe) return;
+    const { period, interval } = activeTimeframe;
+    const key = favoriteKey({ ticker, period, interval });
+    if (favoriteSet.has(key)) {
+      await removeFavorite(ticker, period, interval);
+      setFavorites(prev => prev.filter(f => favoriteKey(f) !== key));
+    } else {
+      const fav = await upsertFavorite(ticker, period, interval);
+      setFavorites(prev => [fav, ...prev.filter(f => favoriteKey(f) !== key)]);
+    }
+  };
+
+  const annotationByTicker = useMemo(() => {
+    const m: Record<string, RoiAnnotation | null> = {};
+    for (const f of feedback) {
+      if (f.annotation) m[f.ticker] = f.annotation;
+    }
+    return m;
+  }, [feedback]);
 
   useEffect(() => {
     const entries = Object.entries(ohlcvByTicker);
@@ -86,13 +141,13 @@ export default function App() {
     const computed: TickerResult[] = [];
     const fps: Record<string, ChartFingerprint> = {};
     for (const [ticker, ohlcv] of entries) {
-      const analysis = analyzeOhlcv(ohlcv, debouncedParams);
+      const analysis = analyzeOhlcv(ohlcv, debouncedParams, annotationByTicker[ticker] ?? null);
       computed.push({ ticker, ohlcv, ...analysis });
       fps[ticker] = analysis.fingerprint;
     }
     setResults(computed);
     setFingerprintByTicker(fps);
-  }, [ohlcvByTicker, debouncedParams]);
+  }, [ohlcvByTicker, debouncedParams, annotationByTicker]);
 
   const preferenceModel = useMemo(() => buildPreferenceModel(feedback), [feedback]);
 
@@ -103,10 +158,17 @@ export default function App() {
     return r.score.total + computePreferenceBonus(fp, preferenceModel);
   };
 
-  const handleFeedbackVote = async (ticker: string, vote: 'like' | 'dislike', tags: string[]) => {
-    const fp = fingerprintByTicker[ticker];
-    if (!fp) return;
-    const entry = await upsertFeedback(ticker, vote, tags, fp);
+  const handleFeedbackVote = async (
+    ticker: string,
+    vote: 'like' | 'dislike',
+    tags: string[],
+    annotation?: RoiAnnotation | null,
+  ) => {
+    // Recompute fingerprint with the new annotation (if any) so the ML sees ROI features immediately.
+    const ohlcv = ohlcvByTicker[ticker];
+    if (!ohlcv) return;
+    const analysis = analyzeOhlcv(ohlcv, debouncedParams, annotation ?? null);
+    const entry = await upsertFeedback(ticker, vote, tags, analysis.fingerprint, annotation ?? null);
     setFeedback(prev => [entry, ...prev.filter(f => f.ticker !== ticker)]);
   };
 
@@ -116,40 +178,54 @@ export default function App() {
   };
 
   const handleClearAll = () => {
+    fetchAbortRef.current?.abort();
     setOhlcvByTicker({});
     setActiveTimeframe(null);
     setFromCache(null);
     setError(null);
     setNoData(false);
+    setMissingTickers([]);
   };
 
   const handleFetch = async (params: FetchParams) => {
+    fetchAbortRef.current?.abort();
+    const controller = new AbortController();
+    fetchAbortRef.current = controller;
+
     setCurrentPeriod(params.period);
     setCurrentInterval(params.interval);
     setLoading(true);
     setError(null);
     setNoData(false);
     setFromCache(null);
+    setMissingTickers([]);
 
     const utChanged = activeTimeframe &&
       (activeTimeframe.period !== params.period || activeTimeframe.interval !== params.interval);
     if (utChanged) setOhlcvByTicker({});
 
     try {
-      const data = await fetchOhlcv(params);
+      const data = await fetchOhlcv(params, controller.signal);
+      if (controller.signal.aborted) return;
       let allCached = true;
       const newOhlcv: Record<string, OHLCVBar[]> = {};
+      const returned = new Set<string>();
       for (const r of data.results) {
         newOhlcv[r.ticker] = r.ohlcv;
+        returned.add(r.ticker);
         if (!r.from_cache) allCached = false;
       }
+      const missing = params.tickers.filter(t => !returned.has(t.toUpperCase()));
       setOhlcvByTicker(prev => (utChanged ? newOhlcv : { ...prev, ...newOhlcv }));
       setActiveTimeframe({ period: params.period, interval: params.interval });
       setFromCache(data.results.length > 0 ? allCached : null);
+      setMissingTickers(missing);
       if (data.results.length === 0) setNoData(true);
-    } catch {
+    } catch (e) {
+      if ((e as Error)?.name === 'AbortError') return;
       setError("Impossible de contacter le backend. Vérifiez qu'uvicorn tourne sur le port 8000.");
     } finally {
+      if (fetchAbortRef.current === controller) fetchAbortRef.current = null;
       setLoading(false);
     }
   };
@@ -196,6 +272,7 @@ export default function App() {
     if (patternFilter === 'w_confirmed') return r.w_patterns.some(w => w.confirmed);
     if (patternFilter === 'coil') return r.is_coiling;
     if (patternFilter === 'score') return r.score.total >= 50;
+    if (patternFilter === 'favorites') return isFavoriteNow(r.ticker);
     return true;
   });
 
@@ -212,6 +289,7 @@ export default function App() {
   const wConfirmed = results.filter(r => r.w_patterns.some(w => w.confirmed)).length;
   const coiling = results.filter(r => r.is_coiling).length;
   const highScore = results.filter(r => r.score.total >= 50).length;
+  const favCount = results.filter(r => isFavoriteNow(r.ticker)).length;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -270,6 +348,8 @@ export default function App() {
               hasData={hasData}
               onParamsChange={setAnalysisParams}
               onParamsSet={setAnalysisParams}
+              ohlcvByTicker={ohlcvByTicker}
+              feedback={feedback}
             />
 
             <SessionPanel
@@ -279,6 +359,12 @@ export default function App() {
               params={analysisParams}
               results={results}
               onRestore={handleRestoreSession}
+            />
+
+            <FavoritesPanel
+              favorites={favorites}
+              onFavoritesChange={setFavorites}
+              onLoad={handleLoadFavorite}
             />
 
             <PreferencePanel
@@ -307,6 +393,12 @@ export default function App() {
             {noData && !loading && (
               <div className="bg-amber-950 border border-amber-800 text-amber-300 rounded-xl px-4 py-3 mb-4 text-sm">
                 Aucune donnée reçue — Yahoo Finance est peut-être temporairement limité. Réessayez dans quelques secondes.
+              </div>
+            )}
+            {missingTickers.length > 0 && !loading && (
+              <div className="bg-amber-950/50 border border-amber-900 text-amber-400 rounded-xl px-4 py-2.5 mb-4 text-xs">
+                <span className="font-semibold">{missingTickers.length} ticker{missingTickers.length > 1 ? 's' : ''} non trouvé{missingTickers.length > 1 ? 's' : ''}</span>
+                <span className="text-amber-500/70 ml-2 font-mono">{missingTickers.slice(0, 20).join(', ')}{missingTickers.length > 20 ? '…' : ''}</span>
               </div>
             )}
 
@@ -394,6 +486,7 @@ export default function App() {
                     <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">
                       {([
                         { key: 'all',         label: 'Tous',        count: afterLevelFilter.length, color: '' },
+                        { key: 'favorites',   label: '★ Favoris',   count: favCount,    color: 'text-yellow-400' },
                         { key: 'w_forming',   label: 'W form.',     count: wForming,    color: 'text-yellow-400' },
                         { key: 'w_confirmed', label: 'W conf.',     count: wConfirmed,  color: 'text-green-400' },
                         { key: 'coil',        label: 'Coil',        count: coiling,     color: 'text-purple-400' },
@@ -433,8 +526,8 @@ export default function App() {
                       const fp = fingerprintByTicker[r.ticker];
                       const vote = feedback.find(f => f.ticker === r.ticker)?.vote ?? null;
                       if (!fp) return null;
-                      const prefScore   = (preferenceModel && fp) ? computePreferenceScore(fp, preferenceModel) : null;
-                      const prefTopFeat = (preferenceModel && fp) ? getTopInfluencingFeatures(fp, preferenceModel) : null;
+                      const prefScore   = preferenceModel ? computePreferenceScore(fp, preferenceModel) : null;
+                      const prefTopFeat = preferenceModel ? getTopInfluencingFeatures(fp, preferenceModel) : null;
                       return (
                         <ChartCard
                           key={r.ticker}
@@ -444,12 +537,14 @@ export default function App() {
                           wPatterns={r.w_patterns}
                           score={r.score}
                           isCoiling={r.is_coiling}
-                          fingerprint={fp}
                           currentVote={vote}
                           preferenceScore={prefScore}
                           preferenceTopFeatures={prefTopFeat}
-                          onFeedback={(v, tags) => handleFeedbackVote(r.ticker, v, tags)}
+                          isFavorite={isFavoriteNow(r.ticker)}
+                          annotation={annotationByTicker[r.ticker] ?? null}
+                          onFeedback={(v, tags, ann) => handleFeedbackVote(r.ticker, v, tags, ann)}
                           onRemoveFeedback={() => handleRemoveFeedback(r.ticker)}
+                          onToggleFavorite={() => handleToggleFavorite(r.ticker)}
                         />
                       );
                     })}

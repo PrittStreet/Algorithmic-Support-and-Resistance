@@ -1,6 +1,7 @@
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from './api';
 import { computeFingerprint } from './lib/preferences';
 import type { ChartFingerprint } from './lib/preferences';
+import type { RoiAnnotation } from './lib/api-storage';
 
 export type { ChartFingerprint };
 
@@ -219,14 +220,18 @@ function computeBreakoutScore(
 
 // ── Main analysis entry point ─────────────────────────────────────────────────
 
-export function analyzeOhlcv(ohlcv: OHLCVBar[], params: AnalysisParams): OhlcvAnalysis {
+export function analyzeOhlcv(
+  ohlcv: OHLCVBar[],
+  params: AnalysisParams,
+  annotation?: RoiAnnotation | null,
+): OhlcvAnalysis {
   if (ohlcv.length < params.pivot_order * 2 + 1) {
     return {
       sr_levels: [],
       w_patterns: [],
       score: { total: 0, tightness: 0, proximity: 0, accumulation: 0, label: null },
       is_coiling: false,
-      fingerprint: computeFingerprint(ohlcv, [], false, []),
+      fingerprint: computeFingerprint(ohlcv, [], false, [], annotation),
     };
   }
 
@@ -245,7 +250,7 @@ export function analyzeOhlcv(ohlcv: OHLCVBar[], params: AnalysisParams): OhlcvAn
   const w_patterns = detectWPatterns(pivotLows, highs, timestamps, params.dif, lastPrice);
   const score = computeBreakoutScore(ohlcv, sr_levels);
   const is_coiling = detectCoil(pivotLows, pivotHighs);
-  const fingerprint = computeFingerprint(ohlcv, sr_levels, is_coiling, w_patterns);
+  const fingerprint = computeFingerprint(ohlcv, sr_levels, is_coiling, w_patterns, annotation);
 
   return { sr_levels, w_patterns, score, is_coiling, fingerprint };
 }

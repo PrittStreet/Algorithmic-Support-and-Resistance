@@ -1,15 +1,21 @@
 import { useState, useEffect, useRef } from 'react';
 import type { AnalysisParams } from '../sr';
+import type { OHLCVBar } from '../api';
+import type { FeedbackEntry } from '../lib/api-storage';
 import { PresetSelector } from './PresetSelector';
+import { AutotuneModal } from './AutotuneModal';
 
 interface Props {
   params: AnalysisParams;
   hasData: boolean;
   onParamsChange: (p: AnalysisParams) => void;
   onParamsSet: (p: AnalysisParams) => void;
+  ohlcvByTicker: Record<string, OHLCVBar[]>;
+  feedback: FeedbackEntry[];
 }
 
-export function SRParamsPanel({ params, hasData, onParamsChange, onParamsSet }: Props) {
+export function SRParamsPanel({ params, hasData, onParamsChange, onParamsSet, ohlcvByTicker, feedback }: Props) {
+  const [tuning, setTuning] = useState(false);
   const [difStr, setDifStr] = useState(String(params.dif));
   const [pivotStr, setPivotStr] = useState(String(params.pivot_order));
   const [touchStr, setTouchStr] = useState(String(params.min_touches));
@@ -68,6 +74,26 @@ export function SRParamsPanel({ params, hasData, onParamsChange, onParamsSet }: 
         current={{ dif: curDif || params.dif, pivot_order: curPivot || params.pivot_order, min_touches: curTouch || params.min_touches }}
         onLoad={onParamsSet}
       />
+
+      {hasData && (
+        <button
+          onClick={() => setTuning(true)}
+          className="mt-3 w-full text-xs bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-500 hover:to-purple-500 text-white px-3 py-2 rounded-lg transition-colors font-semibold"
+          title="Grid search sur les tickers chargés pour trouver les meilleurs paramètres"
+        >
+          ✨ Optimiser automatiquement
+        </button>
+      )}
+
+      {tuning && (
+        <AutotuneModal
+          ohlcvByTicker={ohlcvByTicker}
+          feedback={feedback}
+          current={params}
+          onApply={onParamsSet}
+          onClose={() => setTuning(false)}
+        />
+      )}
     </div>
   );
 }

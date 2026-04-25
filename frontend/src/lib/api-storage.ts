@@ -1,10 +1,8 @@
-// Async API client — replaces localStorage-based storage.ts
-// All data lives in SQLite via the FastAPI backend.
+// Async API client — all data lives in SQLite via the FastAPI backend.
 
 import type { ChartFingerprint } from './preferences';
 import type { AnalysisParams } from '../sr';
-
-// ── Shared types (identical to storage.ts for compatibility) ──────────────────
+import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
 
 export interface TickerList {
   id: string;
@@ -33,11 +31,19 @@ export interface Session {
 
 export interface SessionEntry {
   ticker: string;
-  ohlcv?: { time: number; open: number; high: number; low: number; close: number }[];
-  sr_levels: { price: number; start_time: number; end_time: number; type: string; touches: number }[];
-  w_patterns?: unknown[];
-  score?: unknown;
+  ohlcv?: OHLCVBar[];
+  sr_levels: SRLevel[];
+  w_patterns?: WPattern[];
+  score?: BreakoutScore;
   is_coiling?: boolean;
+}
+
+export interface RoiAnnotation {
+  type: 'roi';
+  t1: number;  // unix seconds (start time, inclusive)
+  t2: number;  // unix seconds (end time, inclusive)
+  p1: number;  // price bound A
+  p2: number;  // price bound B
 }
 
 export interface FeedbackEntry {
@@ -47,6 +53,19 @@ export interface FeedbackEntry {
   vote: 'like' | 'dislike';
   tags: string[];
   fingerprint: ChartFingerprint;
+  annotation?: RoiAnnotation | null;
+}
+
+export interface Favorite {
+  ticker: string;
+  period: string;
+  interval: string;
+  note: string | null;
+  createdAt: number;
+}
+
+export function favoriteKey(f: { ticker: string; period: string; interval: string }): string {
+  return `${f.ticker}|${f.period}|${f.interval}`;
 }
 
 // ── HTTP helper ───────────────────────────────────────────────────────────────
@@ -131,8 +150,9 @@ export async function upsertFeedback(
   vote: 'like' | 'dislike',
   tags: string[],
   fingerprint: ChartFingerprint,
+  annotation?: RoiAnnotation | null,
 ): Promise<FeedbackEntry> {
-  return api<FeedbackEntry>('POST', '/feedback', { ticker, vote, tags, fingerprint });
+  return api<FeedbackEntry>('POST', '/feedback', { ticker, vote, tags, fingerprint, annotation: annotation ?? null });
 }
 
 export async function removeFeedback(ticker: string) {
@@ -141,6 +161,34 @@ export async function removeFeedback(ticker: string) {
 
 export async function clearFeedback() {
   return api<void>('DELETE', '/feedback');
+}
+
+// ── Favorites ─────────────────────────────────────────────────────────────────
+
+export async function getFavorites(): Promise<Favorite[]> {
+  return api<Favorite[]>('GET', '/favorites');
+}
+
+export async function upsertFavorite(
+  ticker: string,
+  period: string,
+  interval: string,
+  note?: string | null,
+): Promise<Favorite> {
+  return api<Favorite>('POST', '/favorites', { ticker, period, interval, note: note ?? null });
+}
+
+export async function updateFavoriteNote(
+  ticker: string,
+  period: string,
+  interval: string,
+  note: string | null,
+): Promise<void> {
+  return api<void>('PATCH', `/favorites/${ticker}/${period}/${interval}`, { note });
+}
+
+export async function removeFavorite(ticker: string, period: string, interval: string): Promise<void> {
+  return api<void>('DELETE', `/favorites/${ticker}/${period}/${interval}`);
 }
 
 // ── One-time migration from localStorage → SQLite ─────────────────────────────

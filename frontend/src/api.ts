@@ -49,12 +49,14 @@ export interface FetchParams {
 }
 
 export async function fetchOhlcv(
-  params: FetchParams
+  params: FetchParams,
+  signal?: AbortSignal,
 ): Promise<{ results: { ticker: string; ohlcv: OHLCVBar[]; from_cache: boolean }[] }> {
   const response = await fetch('/api/ohlcv', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
+    signal,
   });
   if (!response.ok) throw new Error(`API error: ${response.statusText}`);
   return response.json();

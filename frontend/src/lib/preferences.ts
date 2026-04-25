@@ -1,4 +1,5 @@
 import type { OHLCVBar, SRLevel, WPattern } from '../api';
+import type { RoiAnnotation } from './api-storage';
 
 // ── Fingerprint ────────────────────────────────────────────────────────────────
 
@@ -35,6 +36,14 @@ export interface ChartFingerprint {
   // Contexte macro
   pos_52w:          number; // 0–1, position dans le range 52 semaines disponibles
   bars_since_ath_n: number; // 0–1, 1 = near ATH dans les données disponibles
+
+  // Région d'intérêt dessinée par l'utilisateur (0.5 = pas d'annotation)
+  roi_duration:     number; // 0–1, largeur temporelle / 80 bars
+  roi_depth:        number; // 0–1, hauteur du rectangle / prix courant (cap 0.4)
+  roi_age:          number; // 0–1, 1 = collé au présent, 0 = ancien
+  roi_touches_top:  number; // 0–1, nb bars dont high touche le plafond / 6
+  roi_touches_bot:  number; // 0–1, nb bars dont low  touche le plancher / 6
+  roi_position:     number; // 0–1, position du prix courant dans la zone (0=bas, 1=haut)
 }
 
 export const FEATURE_KEYS = [
@@ -44,6 +53,7 @@ export const FEATURE_KEYS = [
   'volume_trend', 'up_vol_ratio', 'vol_contraction',
   'sr_precision', 'nearsup_touches', 'nearres_touches',
   'pos_52w', 'bars_since_ath_n',
+  'roi_duration', 'roi_depth', 'roi_age', 'roi_touches_top', 'roi_touches_bot', 'roi_position',
 ] as const satisfies (keyof ChartFingerprint)[];
 
 export const FEATURE_LABELS: Record<keyof ChartFingerprint, string> = {
@@ -68,6 +78,12 @@ export const FEATURE_LABELS: Record<keyof ChartFingerprint, string> = {
   nearres_touches:   'Touches résistance proche',
   pos_52w:           'Position 52 semaines',
   bars_since_ath_n:  'Proximité ATH',
+  roi_duration:      'ROI · durée',
+  roi_depth:         'ROI · hauteur',
+  roi_age:           'ROI · fraîcheur',
+  roi_touches_top:   'ROI · touches plafond',
+  roi_touches_bot:   'ROI · touches plancher',
+  roi_position:      'ROI · position prix',
 };
 
 export const LIKE_TAGS = [
@@ -114,7 +130,7 @@ export const TAG_FEATURE_MAP: Record<string, TagMapping> = {
   'Base trop courte':          [{ feature: 'base_duration_n', dir: -1 }],
 };
 
-export const MIN_FEEDBACK = 1;
+export const MIN_FEEDBACK = 3;
 const TAG_WEIGHT = 0.5;
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -130,6 +146,7 @@ export function computeFingerprint(
   srLevels: SRLevel[],
   isCoiling: boolean,
   wPatterns: WPattern[],
+  annotation?: RoiAnnotation | null,
 ): ChartFingerprint {
   const n = ohlcv.length;
   const empty: ChartFingerprint = {
@@ -140,6 +157,8 @@ export function computeFingerprint(
     volume_trend: 0.5, up_vol_ratio: 0.5, vol_contraction: 0.5,
     sr_precision: 0.5, nearsup_touches: 0, nearres_touches: 0,
     pos_52w: 0.5, bars_since_ath_n: 0.5,
+    roi_duration: 0.5, roi_depth: 0.5, roi_age: 0.5,
+    roi_touches_top: 0.5, roi_touches_bot: 0.5, roi_position: 0.5,
   };
   if (n < 10) return empty;
 
@@ -276,6 +295,44 @@ export function computeFingerprint(
   ohlcv.forEach((b, i) => { if (b.close > athClose) { athClose = b.close; athIdx = i; } });
   const bars_since_ath_n = Math.max(0, Math.min(1, 1 - (n - 1 - athIdx) / 60));
 
+  // ── ROI features (region of interest drawn by user) ───────────────────────────
+  let roi_duration    = 0.5;
+  let roi_depth       = 0.5;
+  let roi_age         = 0.5;
+  let roi_touches_top = 0.5;
+  let roi_touches_bot = 0.5;
+  let roi_position    = 0.5;
+  if (annotation && annotation.type === 'roi') {
+    const tStart = Math.min(annotation.t1, annotation.t2);
+    const tEnd   = Math.max(annotation.t1, annotation.t2);
+    const pTop   = Math.max(annotation.p1, annotation.p2);
+    const pBot   = Math.min(annotation.p1, annotation.p2);
+
+    // Find bars inside the ROI
+    const inRoi = ohlcv.filter(b => b.time >= tStart && b.time <= tEnd);
+    if (inRoi.length >= 2 && pTop > pBot && lastPrice > 0) {
+      roi_duration = Math.max(0, Math.min(1, inRoi.length / 80));
+      const height = pTop - pBot;
+      roi_depth    = Math.max(0, Math.min(1, (height / lastPrice) / 0.4));
+
+      // Age: 0 = far from present, 1 = ROI ends near the latest bar
+      const latestTs = ohlcv[n - 1].time;
+      const intervalApprox = ohlcv.length >= 2 ? (latestTs - ohlcv[0].time) / (n - 1) : 86400;
+      const barsSinceEnd = Math.max(0, (latestTs - tEnd) / Math.max(1, intervalApprox));
+      roi_age = Math.max(0, Math.min(1, 1 - barsSinceEnd / 40));
+
+      const tol = height * 0.1; // 10% of the ROI height
+      let touchTop = 0, touchBot = 0;
+      for (const b of inRoi) {
+        if (pTop - b.high <= tol) touchTop++;
+        if (b.low - pBot <= tol) touchBot++;
+      }
+      roi_touches_top = Math.max(0, Math.min(1, touchTop / 6));
+      roi_touches_bot = Math.max(0, Math.min(1, touchBot / 6));
+      roi_position = Math.max(0, Math.min(1, (lastPrice - pBot) / height));
+    }
+  }
+
   // ── Volume ────────────────────────────────────────────────────────────────────
   let volume_trend = 0.5, up_vol_ratio = 0.5, vol_contraction = 0.5;
   const vols20 = ohlcv.slice(-20).filter(b => b.volume != null && b.volume! > 0);
@@ -319,6 +376,12 @@ export function computeFingerprint(
     nearres_touches,
     pos_52w,
     bars_since_ath_n,
+    roi_duration,
+    roi_depth,
+    roi_age,
+    roi_touches_top,
+    roi_touches_bot,
+    roi_position,
   };
 }
 

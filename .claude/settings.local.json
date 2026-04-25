@@ -15,7 +15,8 @@
       "Bash(curl -s http://localhost:8000/api/feedback)",
       "Bash(echo \"Exit: $?\")",
       "Bash(uvicorn main:app --reload --port 8000)",
-      "Bash(curl -s http://localhost:8000/api/ohlcv -X POST -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[],\\\\\"period\\\\\":\\\\\"1d\\\\\",\\\\\"interval\\\\\":\\\\\"1d\\\\\"}\")"
+      "Bash(curl -s http://localhost:8000/api/ohlcv -X POST -H \"Content-Type: application/json\" -d \"{\\\\\"tickers\\\\\":[],\\\\\"period\\\\\":\\\\\"1d\\\\\",\\\\\"interval\\\\\":\\\\\"1d\\\\\"}\")",
+      "Bash(git -C \"d:/OneDrive/Documents/VS CODE/Support et resitance/Algorithmic-Support-and-Resistance\" ls-files)"
     ]
   }
 }
