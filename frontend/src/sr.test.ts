@@ -84,23 +84,13 @@ describe('breakout score', () => {
   });
 });
 
-describe('fingerprint normalization', () => {
-  it('all fingerprint features are in [0,1]', () => {
+describe('matched_patterns', () => {
+  it('returns empty array when no templates provided', () => {
     const pts = Array.from({ length: 60 }, (_, i) => {
       const base = 100 + i * 0.3;
       return { h: base + 1, l: base - 1, c: base };
     });
     const r = analyzeOhlcv(mkBarsWithHL(pts), PARAMS);
-    for (const [key, value] of Object.entries(r.fingerprint)) {
-      expect(typeof value).toBe('number');
-      expect(value, `feature ${key}`).toBeGreaterThanOrEqual(0);
-      expect(value, `feature ${key}`).toBeLessThanOrEqual(1);
-    }
-  });
-
-  it('produces 1 for is_coiling when coiling detected, 0 otherwise', () => {
-    const flat = mkBars(Array.from({ length: 60 }, () => 100));
-    const r = analyzeOhlcv(flat, PARAMS);
-    expect([0, 1]).toContain(r.fingerprint.is_coiling);
+    expect(r.matched_patterns).toEqual([]);
   });
 });

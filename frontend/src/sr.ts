@@ -1,14 +1,16 @@
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from './api';
-import { computeFingerprint } from './lib/preferences';
-import type { ChartFingerprint } from './lib/preferences';
-import type { RoiAnnotation } from './lib/api-storage';
+import type { PatternTemplate, DetectedPattern, PatternRulesConfig } from './lib/patternLearning';
+import { detectWithTemplates, detectPatternsGeometric, mergeDetections } from './lib/patternLearning';
 
-export type { ChartFingerprint };
+export type { DetectedPattern };
 
 export interface AnalysisParams {
-  dif: number;
-  pivot_order: number;
-  min_touches: number;
+  tolerance?: number;  // 1.0–3.0, défaut 1.5
+  maxAgeBars?: number; // 0 = désactivé; >0 = marquer niveaux plus anciens que N bars
+  // Champs legacy conservés pour compatibilité sessions sauvegardées
+  dif?: number;
+  pivot_order?: number;
+  min_touches?: number;
 }
 
 export interface OhlcvAnalysis {
@@ -16,8 +18,12 @@ export interface OhlcvAnalysis {
   w_patterns: WPattern[];
   score: BreakoutScore;
   is_coiling: boolean;
-  fingerprint: ChartFingerprint;
+  matched_patterns: DetectedPattern[];
 }
+
+const _DIF         = 1.5;
+const _PIVOT_ORDER = 5;
+const _MIN_TOUCHES = 2;
 
 // ── Pivot detection ────────────────────────────────────────────────────────────
 
@@ -91,7 +97,7 @@ function clusterLevels(
   return levels;
 }
 
-// ── W pattern (double bottom) detection ───────────────────────────────────────
+// ── W pattern (double bottom) ─────────────────────────────────────────────────
 
 function detectWPatterns(
   pivotLows: [number, number][],
@@ -111,23 +117,16 @@ function detectWPatterns(
       const [idxA, priceA] = sorted[i];
       const [idxB, priceB] = sorted[j];
 
-      // Prix similaires entre les deux creux
       if (Math.abs(priceA / priceB - 1) * 100 > difPct * 1.5) continue;
-
-      // Séparation temporelle suffisante
       if (idxB - idxA < 5) continue;
-
-      // Le 2e creux ne doit pas être nettement plus bas que le 1er
       if (priceB < priceA * 0.97) continue;
 
-      // Trouver le pic (neckline) entre les deux creux
       const betweenHighs = highs.slice(idxA + 1, idxB);
       if (betweenHighs.length === 0) continue;
       const necklinePrice = Math.max(...betweenHighs);
       const necklineOffset = betweenHighs.indexOf(necklinePrice);
       const necklineIdx = idxA + 1 + necklineOffset;
 
-      // Le pic doit être significativement au-dessus des creux
       const avgLow = (priceA + priceB) / 2;
       if (necklinePrice < avgLow * 1.02) continue;
 
@@ -143,11 +142,10 @@ function detectWPatterns(
     }
   }
 
-  // Garder les 3 patterns les plus récents (par 2e creux)
   return patterns.sort((a, b) => b.low2_time - a.low2_time).slice(0, 3);
 }
 
-// ── Coil detection (support ascendant + résistance plate) ────────────────────
+// ── Coil detection ────────────────────────────────────────────────────────────
 
 function detectCoil(
   pivotLows: [number, number][],
@@ -157,18 +155,14 @@ function detectCoil(
 
   const sortedLows = [...pivotLows].sort((a, b) => a[0] - b[0]);
   const recent3Lows = sortedLows.slice(-3);
-
-  // Les 3 derniers creux doivent être ascendants
   const lowsAscending = recent3Lows.every((low, i) =>
     i === 0 || low[1] > recent3Lows[i - 1][1] * 0.995
   );
   if (!lowsAscending) return false;
 
-  // Les 2 derniers pics doivent être quasi plats (résistance plate)
   const sortedHighs = [...pivotHighs].sort((a, b) => a[0] - b[0]);
   const recent2Highs = sortedHighs.slice(-2);
   const highsDiffPct = Math.abs(recent2Highs[0][1] / recent2Highs[1][1] - 1) * 100;
-
   return highsDiffPct < 3;
 }
 
@@ -178,15 +172,13 @@ function computeBreakoutScore(
   ohlcv: OHLCVBar[],
   srLevels: SRLevel[]
 ): BreakoutScore {
-  const empty: BreakoutScore = { total: 0, tightness: 0, proximity: 0, accumulation: 0, label: null };
+  const empty: BreakoutScore = { total: 0, tightness: 0, proximity: 0, accumulation: 0, pattern_bonus: 0, label: null };
   if (srLevels.length === 0 || ohlcv.length === 0) return empty;
 
   const lastPrice = ohlcv[ohlcv.length - 1].close;
-
   const supportsBelow = srLevels.filter(l => l.type === 'support' && l.price < lastPrice);
   const resistsAbove = srLevels.filter(l => l.type === 'resistance' && l.price > lastPrice);
 
-  // Accumulation partielle même sans range complet
   const totalSuppTouches = srLevels.filter(l => l.type === 'support').reduce((s, l) => s + l.touches, 0);
   const totalResisTouches = srLevels.filter(l => l.type === 'resistance').reduce((s, l) => s + l.touches, 0);
   const totalTouches = totalSuppTouches + totalResisTouches;
@@ -196,18 +188,15 @@ function computeBreakoutScore(
 
   if (supportsBelow.length === 0 || resistsAbove.length === 0) {
     const total = accumulation;
-    return { total, tightness: 0, proximity: 0, accumulation, label: total >= 60 ? 'fort' : total >= 40 ? 'modéré' : total >= 20 ? 'faible' : null };
+    return { total, tightness: 0, proximity: 0, accumulation, pattern_bonus: 0, label: total >= 60 ? 'fort' : total >= 40 ? 'modéré' : total >= 20 ? 'faible' : null };
   }
 
-  // Niveau le plus proche de chaque côté
   const nearestSupport = supportsBelow.reduce((a, b) => a.price > b.price ? a : b);
   const nearestResist = resistsAbove.reduce((a, b) => a.price < b.price ? a : b);
 
-  // Tightness (0–40) : range étroit = score haut
   const rangeWidthPct = (nearestResist.price - nearestSupport.price) / nearestSupport.price * 100;
   const tightness = Math.max(0, Math.round(40 - rangeWidthPct * 3));
 
-  // Proximity (0–40) : prix proche de la résistance = score haut
   const distPct = (nearestResist.price - lastPrice) / nearestResist.price * 100;
   const proximity = Math.max(0, Math.round(40 - distPct * 6));
 
@@ -215,7 +204,7 @@ function computeBreakoutScore(
   const label: BreakoutScore['label'] =
     total >= 60 ? 'fort' : total >= 40 ? 'modéré' : total >= 20 ? 'faible' : null;
 
-  return { total, tightness, proximity, accumulation, label };
+  return { total, tightness, proximity, accumulation, pattern_bonus: 0, label };
 }
 
 // ── Main analysis entry point ─────────────────────────────────────────────────
@@ -223,39 +212,69 @@ function computeBreakoutScore(
 export function analyzeOhlcv(
   ohlcv: OHLCVBar[],
   params: AnalysisParams,
-  annotation?: RoiAnnotation | null,
+  templates: PatternTemplate[] = [],
+  patternRules?: PatternRulesConfig,
 ): OhlcvAnalysis {
-  if (ohlcv.length < params.pivot_order * 2 + 1) {
-    return {
-      sr_levels: [],
-      w_patterns: [],
-      score: { total: 0, tightness: 0, proximity: 0, accumulation: 0, label: null },
-      is_coiling: false,
-      fingerprint: computeFingerprint(ohlcv, [], false, [], annotation),
-    };
-  }
+  const dif = params.dif ?? _DIF;
+  const pivot_order = params.pivot_order ?? _PIVOT_ORDER;
+  const min_touches = params.min_touches ?? _MIN_TOUCHES;
+  const tolerance = params.tolerance ?? 1.5;
+
+  const empty: OhlcvAnalysis = {
+    sr_levels: [],
+    w_patterns: [],
+    score: { total: 0, tightness: 0, proximity: 0, accumulation: 0, pattern_bonus: 0, label: null },
+    is_coiling: false,
+    matched_patterns: [],
+  };
+
+  if (ohlcv.length < pivot_order * 2 + 1) return empty;
 
   const highs = ohlcv.map(b => b.high);
   const lows = ohlcv.map(b => b.low);
   const timestamps = ohlcv.map(b => b.time);
   const lastPrice = ohlcv[ohlcv.length - 1].close;
 
-  const pivotHighs = findPivotHighs(highs, params.pivot_order);
-  const pivotLows = findPivotLows(lows, params.pivot_order);
+  const pivotHighs = findPivotHighs(highs, pivot_order);
+  const pivotLows = findPivotLows(lows, pivot_order);
 
-  const resistances = clusterLevels(pivotHighs, params.dif, params.min_touches, 'resistance', timestamps);
-  const supports = clusterLevels(pivotLows, params.dif, params.min_touches, 'support', timestamps);
+  const resistances = clusterLevels(pivotHighs, dif, min_touches, 'resistance', timestamps);
+  const supports = clusterLevels(pivotLows, dif, min_touches, 'support', timestamps);
   const sr_levels = [...resistances, ...supports].sort((a, b) => b.price - a.price);
 
-  const w_patterns = detectWPatterns(pivotLows, highs, timestamps, params.dif, lastPrice);
-  const score = computeBreakoutScore(ohlcv, sr_levels);
-  const is_coiling = detectCoil(pivotLows, pivotHighs);
-  const fingerprint = computeFingerprint(ohlcv, sr_levels, is_coiling, w_patterns, annotation);
+  // Mark obsolete levels if maxAgeBars is set
+  const maxAgeBars = params.maxAgeBars ?? 0;
+  if (maxAgeBars > 0) {
+    const lastBarIdx = ohlcv.length - 1;
+    for (const level of sr_levels) {
+      const endIdx = timestamps.lastIndexOf(level.end_time);
+      const age = endIdx >= 0 ? lastBarIdx - endIdx : 0;
+      if (age > maxAgeBars) level.obsolete = true;
+    }
+  }
 
-  return { sr_levels, w_patterns, score, is_coiling, fingerprint };
+  const w_patterns = detectWPatterns(pivotLows, highs, timestamps, dif, lastPrice);
+  const is_coiling = detectCoil(pivotLows, pivotHighs);
+
+  const templateMatches = detectWithTemplates(ohlcv, templates, tolerance);
+  const geoMatches = patternRules ? detectPatternsGeometric(ohlcv, patternRules) : [];
+  const matched_patterns = mergeDetections(templateMatches, geoMatches);
+
+  // Compute S/R score and add pattern bonus
+  const srScore = computeBreakoutScore(ohlcv, sr_levels);
+  const bestTemplateScore = templateMatches.length > 0 ? Math.max(...templateMatches.map(m => m.score)) : 0;
+  const bestGeoScore = geoMatches.length > 0 ? Math.max(...geoMatches.map(m => m.score)) : 0;
+  // S/R base vaut 60% du score max ; templates + géo valent jusqu'à 60 pts (40+20)
+  const pattern_bonus = Math.round(bestTemplateScore * 0.4) + Math.round(bestGeoScore * 0.2);
+  const srBase = srScore.tightness + srScore.proximity + srScore.accumulation;
+  const total = Math.min(100, Math.round(srBase * 0.6) + pattern_bonus);
+  const label: BreakoutScore['label'] = total >= 60 ? 'fort' : total >= 40 ? 'modéré' : total >= 20 ? 'faible' : null;
+  const score: BreakoutScore = { ...srScore, pattern_bonus, total, label };
+
+  return { sr_levels, w_patterns, score, is_coiling, matched_patterns };
 }
 
-// Kept for backward compatibility (session restore uses sr_levels directly)
+// Conservé pour compatibilité avec les sessions sauvegardées
 export function computeSRLevels(ohlcv: OHLCVBar[], params: AnalysisParams): SRLevel[] {
   return analyzeOhlcv(ohlcv, params).sr_levels;
 }

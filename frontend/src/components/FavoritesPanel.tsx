@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { Favorite } from '../lib/api-storage';
 import { updateFavoriteNote, removeFavorite, favoriteKey } from '../lib/api-storage';
+import { TVChartModal } from './TVChartModal';
 
 interface Props {
   favorites: Favorite[];
@@ -12,6 +13,7 @@ export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) 
   const [open, setOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
+  const [tvModal, setTvModal] = useState<{ ticker: string; interval: string } | null>(null);
 
   const handleRemove = async (fav: Favorite) => {
     await removeFavorite(fav.ticker, fav.period, fav.interval);
@@ -33,6 +35,14 @@ export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) 
   });
 
   return (
+    <>
+    {tvModal && (
+      <TVChartModal
+        ticker={tvModal.ticker}
+        interval={tvModal.interval}
+        onClose={() => setTvModal(null)}
+      />
+    )}
     <div className="bg-slate-900 border border-slate-700 rounded-2xl overflow-hidden">
       <button
         className="w-full flex items-center justify-between px-6 py-4 hover:bg-slate-800/50 transition-colors"
@@ -74,6 +84,11 @@ export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) 
                     </button>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
+                        onClick={() => setTvModal({ ticker: fav.ticker, interval: fav.interval })}
+                        className="text-xs text-slate-600 hover:text-blue-400 px-1.5 py-1 transition-colors"
+                        title={`Ouvrir ${fav.ticker} dans TradingView`}
+                      >📈</button>
+                      <button
                         onClick={() => { setEditingKey(key); setNoteDraft(fav.note ?? ''); }}
                         className="text-xs text-slate-600 hover:text-slate-300 px-1.5 py-1 transition-colors"
                         title="Éditer la note"
@@ -112,5 +127,6 @@ export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) 
         </div>
       )}
     </div>
+    </>
   );
 }

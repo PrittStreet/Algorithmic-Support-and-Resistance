@@ -13,6 +13,7 @@ export interface SRLevel {
   end_time: number;
   type: 'support' | 'resistance';
   touches: number;
+  obsolete?: boolean;
 }
 
 export interface WPattern {
@@ -30,6 +31,7 @@ export interface BreakoutScore {
   tightness: number;    // 0–40 : range étroit
   proximity: number;    // 0–40 : prix proche de la résistance
   accumulation: number; // 0–20 : asymétrie touches support/résistance
+  pattern_bonus: number; // 0–60 : bonus templates (0–40) + patterns géométriques (0–20)
   label: 'fort' | 'modéré' | 'faible' | null;
 }
 
@@ -40,6 +42,7 @@ export interface TickerResult {
   w_patterns: WPattern[];
   score: BreakoutScore;
   is_coiling: boolean;
+  matched_patterns: import('./lib/patternLearning').DetectedPattern[];
 }
 
 export interface FetchParams {

@@ -107,11 +107,40 @@ def _db_init():
                 created_at   INTEGER NOT NULL,
                 PRIMARY KEY (ticker, period, interval_val)
             );
+            CREATE TABLE IF NOT EXISTS trade_references (
+                id           TEXT PRIMARY KEY,
+                ticker       TEXT NOT NULL,
+                date_in      TEXT NOT NULL,
+                date_out     TEXT NOT NULL,
+                interval_val TEXT NOT NULL,
+                notes        TEXT,
+                created_at   INTEGER NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS pattern_annotations (
+                id           TEXT PRIMARY KEY,
+                trade_ref_id TEXT NOT NULL,
+                pattern_type TEXT NOT NULL,
+                points       TEXT NOT NULL,
+                created_at   INTEGER NOT NULL
+            );
         """)
         # Migration: add annotation column to pre-existing feedback tables
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(feedback)").fetchall()]
         if "annotation" not in cols:
             conn.execute("ALTER TABLE feedback ADD COLUMN annotation TEXT")
+        # Migration: old W annotations had 4 points; new W has 5 → 4-pt W don't fit → Custom.
+        conn.execute("""
+            UPDATE pattern_annotations
+            SET pattern_type = 'Custom'
+            WHERE pattern_type = 'W'
+              AND json_array_length(points) = 4
+        """)
+        # Migration: 'Double Bottom' was an interim type, now removed → preserve as Custom.
+        conn.execute("""
+            UPDATE pattern_annotations
+            SET pattern_type = 'Custom'
+            WHERE pattern_type = 'Double Bottom'
+        """)
         count = conn.execute("SELECT COUNT(*) FROM ticker_lists").fetchone()[0]
         if count == 0:
             conn.execute("INSERT INTO ticker_lists VALUES (?,?,?,?)",
@@ -644,6 +673,166 @@ async def migrate(body: MigrateBody):
             conn.commit()
     await asyncio.to_thread(_run)
     return {"migrated": inserted}
+
+
+# ── OHLCV range (date-based) ──────────────────────────────────────────────────
+class OhlcvRangeRequest(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=10)
+    date_in: str   # ISO date YYYY-MM-DD
+    date_out: str  # ISO date YYYY-MM-DD
+    interval: str = "1d"
+
+    @field_validator("ticker")
+    @classmethod
+    def _check_ticker(cls, v: str) -> str:
+        u = v.strip().upper()
+        if not _TICKER_RE.match(u):
+            raise ValueError(f"ticker invalide: {v}")
+        return u
+
+    @field_validator("interval")
+    @classmethod
+    def _check_interval(cls, v: str) -> str:
+        if v not in _VALID_INTERVALS:
+            raise ValueError(f"intervalle invalide: {v}")
+        return v
+
+@app.post("/api/ohlcv-range")
+async def fetch_ohlcv_range(req: OhlcvRangeRequest):
+    def _run():
+        import datetime
+        # yfinance `end` is exclusive — add 1 day so date_out is included
+        end_date = (datetime.date.fromisoformat(req.date_out) + datetime.timedelta(days=1)).isoformat()
+        try:
+            df = yf.download(
+                req.ticker, start=req.date_in, end=end_date,
+                interval=req.interval, progress=False, auto_adjust=True,
+            )
+            if df.empty:
+                return None
+            if isinstance(df.columns, pd.MultiIndex):
+                df = df.xs(req.ticker, level=1, axis=1)
+            return _df_to_ohlcv(df)
+        except Exception as e:
+            print(f"[RANGE] Error fetching {req.ticker}: {e}")
+            return None
+
+    ohlcv = await asyncio.to_thread(_run)
+    if ohlcv is None:
+        raise HTTPException(404, f"Aucune donnée pour {req.ticker} sur la période demandée")
+    return {"ticker": req.ticker, "ohlcv": ohlcv}
+
+
+# ── Trade References API ───────────────────────────────────────────────────────
+class TradeRefBody(BaseModel):
+    ticker: str = Field(..., min_length=1, max_length=10)
+    date_in: str
+    date_out: str
+    interval: str = "1d"
+    notes: Optional[str] = Field(None, max_length=500)
+
+    @field_validator("ticker")
+    @classmethod
+    def _check_ticker(cls, v: str) -> str:
+        u = v.strip().upper()
+        if not _TICKER_RE.match(u):
+            raise ValueError(f"ticker invalide: {v}")
+        return u
+
+    @field_validator("interval")
+    @classmethod
+    def _check_interval(cls, v: str) -> str:
+        if v not in _VALID_INTERVALS:
+            raise ValueError(f"intervalle invalide: {v}")
+        return v
+
+@app.get("/api/trade-references")
+async def get_trade_references():
+    rows = await _db_fetchall("SELECT * FROM trade_references ORDER BY created_at DESC")
+    return [{
+        "id": r["id"], "ticker": r["ticker"],
+        "dateIn": r["date_in"], "dateOut": r["date_out"],
+        "interval": r["interval_val"],
+        "notes": r["notes"], "createdAt": r["created_at"],
+    } for r in rows]
+
+@app.post("/api/trade-references", status_code=201)
+async def create_trade_reference(body: TradeRefBody):
+    item = {
+        "id": _uid(), "ticker": body.ticker.upper(),
+        "dateIn": body.date_in, "dateOut": body.date_out,
+        "interval": body.interval, "notes": body.notes,
+        "createdAt": int(time.time() * 1000),
+    }
+    await _db_execute(
+        "INSERT INTO trade_references VALUES (?,?,?,?,?,?,?)",
+        (item["id"], item["ticker"], item["dateIn"], item["dateOut"],
+         item["interval"], item["notes"], item["createdAt"])
+    )
+    return item
+
+@app.delete("/api/trade-references/{ref_id}")
+async def delete_trade_reference(ref_id: str):
+    await _db_execute("DELETE FROM pattern_annotations WHERE trade_ref_id=?", (ref_id,))
+    await _db_execute("DELETE FROM trade_references WHERE id=?", (ref_id,))
+    return {"ok": True}
+
+
+# ── Pattern Annotations API ────────────────────────────────────────────────────
+class AnnotationBody(BaseModel):
+    trade_ref_id: str
+    pattern_type: str = Field(..., min_length=1, max_length=50)
+    points: List[Any] = Field(..., max_length=20)
+
+@app.get("/api/pattern-annotations")
+async def get_pattern_annotations(trade_ref_id: Optional[str] = None):
+    if trade_ref_id:
+        rows = await _db_fetchall(
+            "SELECT * FROM pattern_annotations WHERE trade_ref_id=? ORDER BY created_at DESC",
+            (trade_ref_id,)
+        )
+    else:
+        rows = await _db_fetchall("SELECT * FROM pattern_annotations ORDER BY created_at DESC")
+    return [{
+        "id": r["id"], "tradeRefId": r["trade_ref_id"],
+        "patternType": r["pattern_type"],
+        "points": json.loads(r["points"]),
+        "createdAt": r["created_at"],
+    } for r in rows]
+
+@app.post("/api/pattern-annotations", status_code=201)
+async def upsert_pattern_annotation(body: AnnotationBody):
+    ref = await _db_fetchone("SELECT id FROM trade_references WHERE id=?", (body.trade_ref_id,))
+    if not ref:
+        raise HTTPException(404, "Référence de trade introuvable")
+    # One annotation per (trade_ref_id, pattern_type) — upsert logic
+    existing = await _db_fetchone(
+        "SELECT id FROM pattern_annotations WHERE trade_ref_id=? AND pattern_type=?",
+        (body.trade_ref_id, body.pattern_type)
+    )
+    now = int(time.time() * 1000)
+    if existing:
+        ann_id = existing["id"]
+        await _db_execute(
+            "UPDATE pattern_annotations SET points=?, created_at=? WHERE id=?",
+            (json.dumps(body.points), now, ann_id)
+        )
+    else:
+        ann_id = _uid()
+        await _db_execute(
+            "INSERT INTO pattern_annotations VALUES (?,?,?,?,?)",
+            (ann_id, body.trade_ref_id, body.pattern_type, json.dumps(body.points), now)
+        )
+    return {
+        "id": ann_id, "tradeRefId": body.trade_ref_id,
+        "patternType": body.pattern_type,
+        "points": body.points, "createdAt": now,
+    }
+
+@app.delete("/api/pattern-annotations/{ann_id}")
+async def delete_pattern_annotation(ann_id: str):
+    await _db_execute("DELETE FROM pattern_annotations WHERE id=?", (ann_id,))
+    return {"ok": True}
 
 
 # ── Serve React build ─────────────────────────────────────────────────────────
