@@ -835,6 +835,130 @@ async def delete_pattern_annotation(ann_id: str):
     return {"ok": True}
 
 
+# ── Gemini Vision proxy ───────────────────────────────────────────────────────
+# Proxy pour protéger la clé API Gemini côté serveur (jamais loggée).
+
+class GeminiTestRequest(BaseModel):
+    api_key: str
+    model: str = "gemini-2.5-flash"
+
+@app.post("/api/gemini-test")
+async def gemini_test(req: GeminiTestRequest):
+    import httpx
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:generateContent?key={req.api_key}"
+    payload = {
+        "contents": [{"parts": [{"text": "Réponds uniquement par le mot OK."}]}],
+        "generationConfig": {"temperature": 0, "maxOutputTokens": 5},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, json=payload)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Impossible de joindre Gemini: {exc}")
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Gemini API {resp.status_code}: {resp.text[:300]}")
+    return {"status": "ok"}
+
+class GeminiAnalyzeRequest(BaseModel):
+    image_base64: str          # PNG en base64 (sans préfixe data:)
+    ticker: str
+    pattern_type: str
+    score_quantitatif: int
+    timeframe: str
+    api_key: str               # clé Gemini de l'utilisateur
+    model: str = "gemini-2.5-flash"
+    custom_prompt: Optional[str] = None  # prompt personnalisé (variables déjà substituées)
+
+class GeminiAnalysis(BaseModel):
+    note: int                  # 0–10
+    tendance: str              # haussier | neutre | baissier
+    justification: str
+    point_attention: str
+
+@app.post("/api/gemini-analyze", response_model=GeminiAnalysis)
+async def gemini_analyze(req: GeminiAnalyzeRequest):
+    import httpx
+
+    if req.custom_prompt:
+        prompt = req.custom_prompt
+    else:
+        prompt = (
+            f"Tu es un analyste technique expert en trading. Analyse ce graphique {req.ticker} ({req.timeframe}).\n\n"
+            f"CONTEXTE DU SETUP :\n"
+            f"- Pattern détecté : {req.pattern_type}\n"
+            f"- Score quantitatif interne : {req.score_quantitatif}/100\n"
+            f"- Lignes rouges = résistances | Lignes vertes = supports\n\n"
+            f"MISSION : Évalue si ce setup est favorable pour un trade, en analysant :\n"
+            f"1. La qualité du rebond/cassure sur les niveaux S/R visibles\n"
+            f"2. La structure des chandeliers autour du pattern ({req.pattern_type})\n"
+            f"3. La cohérence globale du setup avec le score quantitatif de {req.score_quantitatif}/100\n\n"
+            f"Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :\n"
+            f'{{"note": <entier 0-10>, "tendance": "<haussier|neutre|baissier>", '
+            f'"justification": "<2 phrases précises>", "point_attention": "<1 risque principal ou vide>"}}'
+        )
+
+    payload = {
+        "contents": [{"parts": [
+            {"inline_data": {"mime_type": "image/png", "data": req.image_base64}},
+            {"text": prompt},
+        ]}],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 1024,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:generateContent?key={req.api_key}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload)
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail=f"Impossible de joindre Gemini: {exc}")
+
+    if resp.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Gemini API {resp.status_code}: {resp.text[:300]}")
+
+    data = resp.json()
+    try:
+        candidate = data["candidates"][0]
+        finish_reason = candidate.get("finishReason", "")
+        text = candidate["content"]["parts"][0]["text"].strip()
+    except (KeyError, IndexError):
+        raise HTTPException(status_code=502, detail="Réponse Gemini inattendue")
+
+    if finish_reason == "MAX_TOKENS":
+        raise HTTPException(status_code=502, detail=f"Réponse Gemini tronquée (MAX_TOKENS) — JSON incomplet : {text[:300]}")
+
+    # Nettoyer les blocs markdown éventuels
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+
+    result = None
+    try:
+        result = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        # Fallback : extraire le premier bloc JSON du texte
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            try:
+                result = json.loads(match.group())
+            except (json.JSONDecodeError, ValueError):
+                pass
+
+    if result is None:
+        raise HTTPException(status_code=502, detail=f"JSON Gemini invalide — {text[:200]}")
+
+    try:
+        return GeminiAnalysis(
+            note=max(0, min(10, int(result.get("note", 5)))),
+            tendance=str(result.get("tendance", "neutre")),
+            justification=str(result.get("justification", "")),
+            point_attention=str(result.get("point_attention", "")),
+        )
+    except (ValueError, KeyError) as exc:
+        raise HTTPException(status_code=502, detail=f"Données Gemini invalides: {exc}")
+
+
 # ── Serve React build ─────────────────────────────────────────────────────────
 _STATIC = Path(__file__).parent / "static"
 if _STATIC.exists():

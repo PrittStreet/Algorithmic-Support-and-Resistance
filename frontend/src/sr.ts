@@ -1,8 +1,10 @@
 import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from './api';
 import type { PatternTemplate, DetectedPattern, PatternRulesConfig } from './lib/patternLearning';
 import { detectWithTemplates, detectPatternsGeometric, mergeDetections } from './lib/patternLearning';
+import { patternEngine } from './lib/patternEngine';
+import type { CandidateTrade } from './lib/patternEngine';
 
-export type { DetectedPattern };
+export type { DetectedPattern, CandidateTrade };
 
 export interface AnalysisParams {
   tolerance?: number;  // 1.0–3.0, défaut 1.5
@@ -19,6 +21,7 @@ export interface OhlcvAnalysis {
   score: BreakoutScore;
   is_coiling: boolean;
   matched_patterns: DetectedPattern[];
+  candidate_trades: CandidateTrade[];
 }
 
 const _DIF         = 1.5;
@@ -226,6 +229,7 @@ export function analyzeOhlcv(
     score: { total: 0, tightness: 0, proximity: 0, accumulation: 0, pattern_bonus: 0, label: null },
     is_coiling: false,
     matched_patterns: [],
+    candidate_trades: [],
   };
 
   if (ohlcv.length < pivot_order * 2 + 1) return empty;
@@ -257,7 +261,7 @@ export function analyzeOhlcv(
   const is_coiling = detectCoil(pivotLows, pivotHighs);
 
   const templateMatches = detectWithTemplates(ohlcv, templates, tolerance);
-  const geoMatches = patternRules ? detectPatternsGeometric(ohlcv, patternRules) : [];
+  const geoMatches = patternRules ? detectPatternsGeometric(ohlcv, patternRules, tolerance) : [];
   const matched_patterns = mergeDetections(templateMatches, geoMatches);
 
   // Compute S/R score and add pattern bonus
@@ -271,7 +275,16 @@ export function analyzeOhlcv(
   const label: BreakoutScore['label'] = total >= 60 ? 'fort' : total >= 40 ? 'modéré' : total >= 20 ? 'faible' : null;
   const score: BreakoutScore = { ...srScore, pattern_bonus, total, label };
 
-  return { sr_levels, w_patterns, score, is_coiling, matched_patterns };
+  // Candidats enrichis avec contexte S/R et scores décomposés (pour usage futur Gemini)
+  const candidate_trades = patternRules
+    ? patternEngine.detect(ohlcv, templates, patternRules, {
+        tolerance,
+        srLevels: sr_levels,
+        srBaseScore: srBase,
+      })
+    : [];
+
+  return { sr_levels, w_patterns, score, is_coiling, matched_patterns, candidate_trades };
 }
 
 // Conservé pour compatibilité avec les sessions sauvegardées

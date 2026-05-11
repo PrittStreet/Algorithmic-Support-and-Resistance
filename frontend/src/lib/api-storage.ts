@@ -155,9 +155,11 @@ export async function saveSession(
   params: AnalysisParams,
   tickers: string[],
   snapshot: SessionEntry[],
+  keepOhlcv = false,
 ): Promise<Session> {
-  // Strip OHLCV to keep sessions compact even in SQLite
-  const lightSnapshot = snapshot.map(({ ohlcv: _ohlcv, ...rest }) => rest);
+  const lightSnapshot = keepOhlcv
+    ? snapshot
+    : snapshot.map(({ ohlcv: _ohlcv, ...rest }) => rest);
   return api<Session>('POST', '/sessions', { name, period, interval, params, tickers, snapshot: lightSnapshot });
 }
 

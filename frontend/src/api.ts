@@ -43,6 +43,7 @@ export interface TickerResult {
   score: BreakoutScore;
   is_coiling: boolean;
   matched_patterns: import('./lib/patternLearning').DetectedPattern[];
+  candidate_trades: import('./lib/patternEngine').CandidateTrade[];
 }
 
 export interface FetchParams {

@@ -513,8 +513,10 @@ function _ts(timestamps: number[], idx: number): number {
 
 // ── Range geometric detector ──────────────────────────────────────────────────
 
-function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules): DetectedPattern[] {
+function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules, tolerance = 1.5): DetectedPattern[] {
   if (!rules.enabled || ohlcv.length < rules.minDurationBars) return [];
+
+  const t = tolerance / 1.5; // facteur de normalisation (1.0 à tolerance=1.5)
 
   const highs      = ohlcv.map(b => b.high);
   const lows       = ohlcv.map(b => b.low);
@@ -526,8 +528,11 @@ function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules): DetectedPattern[
 
   if (pivHigh.length < rules.minTouchesMinSide || pivLow.length < rules.minTouchesMinSide) return [];
 
-  const resClusters = _clusterPivots(pivHigh, timestamps, rules.touchTolerance);
-  const supClusters = _clusterPivots(pivLow,  timestamps, rules.touchTolerance);
+  const touchTol    = rules.touchTolerance * t;  // zone de contact plus large si tolerance élevée
+  const flatnessMax = rules.flatnessMax    * t;  // seuil de planéité plus permissif
+
+  const resClusters = _clusterPivots(pivHigh, timestamps, touchTol);
+  const supClusters = _clusterPivots(pivLow,  timestamps, touchTol);
 
   const results: DetectedPattern[] = [];
 
@@ -545,7 +550,7 @@ function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules): DetectedPattern[
 
       const resFlatness = (res.std / rangeH) * 100;
       const supFlatness = (sup.std / rangeH) * 100;
-      if (resFlatness > rules.flatnessMax || supFlatness > rules.flatnessMax) continue;
+      if (resFlatness > flatnessMax || supFlatness > flatnessMax) continue;
 
       const barStart = Math.min(res.firstBar, sup.firstBar);
       const barEnd   = Math.max(res.lastBar,  sup.lastBar);
@@ -553,7 +558,7 @@ function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules): DetectedPattern[
 
       // Score: base 35, +touch bonus (max 40), +flatness bonus (max 25)
       const touchBonus   = Math.min(40, Math.max(0, (maxTouches + minTouches - 5) / 7 * 40));
-      const flatBonus    = Math.max(0, (1 - (resFlatness + supFlatness) / (2 * rules.flatnessMax)) * 25);
+      const flatBonus    = Math.max(0, (1 - (resFlatness + supFlatness) / (2 * flatnessMax)) * 25);
       const score        = Math.round(Math.min(100, 35 + touchBonus + flatBonus));
       const confidence: DetectedPattern['confidence'] =
         score >= 70 ? 'fort' : score >= 50 ? 'modéré' : 'faible';
@@ -580,8 +585,10 @@ function _detectRangeGeo(ohlcv: OHLCVBar[], rules: RangeRules): DetectedPattern[
 
 // ── W (Double Bottom) geometric detector ─────────────────────────────────────
 
-function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules): DetectedPattern[] {
+function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules, tolerance = 1.5): DetectedPattern[] {
   if (!rules.enabled || ohlcv.length < rules.minDurationBars) return [];
+
+  const t = tolerance / 1.5;
 
   const highs      = ohlcv.map(b => b.high);
   const lows       = ohlcv.map(b => b.low);
@@ -593,6 +600,9 @@ function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules): DetectedPattern[] {
   const sorted  = [...pivLow].sort((a, b) => a[0] - b[0]);
   const results: DetectedPattern[] = [];
 
+  const legSymMax       = rules.legSymmetryMax     * t;   // symétrie plus permissive
+  const necklineMinLift = rules.necklineMinLiftPct / t;   // minimum de lift abaissé
+
   for (let i = 0; i < sorted.length - 1; i++) {
     for (let j = i + 1; j < sorted.length; j++) {
       const [idxA, priceA] = sorted[i];
@@ -603,7 +613,7 @@ function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules): DetectedPattern[] {
 
       // Leg symmetry
       const symPct = Math.abs(priceA / priceB - 1) * 100;
-      if (symPct > rules.legSymmetryMax) continue;
+      if (symPct > legSymMax) continue;
 
       // Second low must not undercut first significantly
       if (priceB < priceA * 0.97) continue;
@@ -618,7 +628,7 @@ function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules): DetectedPattern[] {
       // Neckline must be sufficiently above the lows
       const avgLow = (priceA + priceB) / 2;
       const liftPct = (necklinePrice - avgLow) / avgLow * 100;
-      if (liftPct < rules.necklineMinLiftPct) continue;
+      if (liftPct < necklineMinLift) continue;
 
       // haut_gauche: highest high to the left of first low
       const leftHighs = highs.slice(0, idxA);
@@ -659,8 +669,10 @@ function _detectWGeo(ohlcv: OHLCVBar[], rules: WRules): DetectedPattern[] {
 
 // ── ETE (Head & Shoulders) geometric detector ─────────────────────────────────
 
-function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules): DetectedPattern[] {
+function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules, tolerance = 1.5): DetectedPattern[] {
   if (!rules.enabled || ohlcv.length < rules.minDurationBars) return [];
+
+  const t = tolerance / 1.5;
 
   const highs      = ohlcv.map(b => b.high);
   const lows       = ohlcv.map(b => b.low);
@@ -671,6 +683,10 @@ function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules): DetectedPattern[] {
 
   const sorted  = [...pivHigh].sort((a, b) => a[0] - b[0]);
   const results: DetectedPattern[] = [];
+
+  const shoulderSymMax  = rules.shoulderSymmetryMax * t;   // symétrie plus permissive
+  const headLiftMin     = rules.headLiftMin          / t;  // minimum de lift abaissé
+  const necklineSlopeMax = rules.necklineSlopeMax    * t;  // pente neckline plus tolérée
 
   // Look for triplets: S1 (left shoulder), H (head), S2 (right shoulder)
   for (let i = 0; i < sorted.length - 2; i++) {
@@ -687,10 +703,10 @@ function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules): DetectedPattern[] {
 
         const avgShoulder = (priceS1 + priceS2) / 2;
         const headLiftPct = (priceH - avgShoulder) / avgShoulder * 100;
-        if (headLiftPct < rules.headLiftMin) continue;
+        if (headLiftPct < headLiftMin) continue;
 
         const symPct = Math.abs(priceS1 / priceS2 - 1) * 100;
-        if (symPct > rules.shoulderSymmetryMax) continue;
+        if (symPct > shoulderSymMax) continue;
 
         // Neckline: trough between S1-H and trough between H-S2
         const seg1 = lows.slice(idxS1, idxH + 1);
@@ -703,7 +719,7 @@ function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules): DetectedPattern[] {
         const nl2Idx   = idxH + seg2.indexOf(nl2Price);
 
         const nlSlopePct = Math.abs(nl1Price / nl2Price - 1) * 100;
-        if (nlSlopePct > rules.necklineSlopeMax) continue;
+        if (nlSlopePct > necklineSlopeMax) continue;
 
         const deptIdx = Math.max(0, idxS1 - rules.pivotLookback * 2);
         const finIdx  = Math.min(ohlcv.length - 1, idxS2 + rules.pivotLookback * 2);
@@ -741,8 +757,10 @@ function _detectETEGeo(ohlcv: OHLCVBar[], rules: ETERules): DetectedPattern[] {
 
 // ── Triangle Ascendant geometric detector ─────────────────────────────────────
 
-function _detectTriangleAscGeo(ohlcv: OHLCVBar[], rules: TriangleAscRules): DetectedPattern[] {
+function _detectTriangleAscGeo(ohlcv: OHLCVBar[], rules: TriangleAscRules, tolerance = 1.5): DetectedPattern[] {
   if (!rules.enabled || ohlcv.length < rules.minDurationBars) return [];
+
+  const t = tolerance / 1.5;
 
   const highs      = ohlcv.map(b => b.high);
   const lows       = ohlcv.map(b => b.low);
@@ -758,13 +776,16 @@ function _detectTriangleAscGeo(ohlcv: OHLCVBar[], rules: TriangleAscRules): Dete
   const regHigh = _linReg(pivHigh);
   const regLow  = _linReg(pivLow);
 
+  const resSlopeMax = rules.resistanceSlopeMax * t;  // résistance plus plate tolérée
+  const supSlopeMin = rules.supportSlopeMin    / t;  // support moins incliné accepté
+
   // Resistance slope as % per 100 bars
   const resSlopePct = Math.abs(regHigh.slope / midPrice) * 100 * 100;
-  if (resSlopePct > rules.resistanceSlopeMax) return [];
+  if (resSlopePct > resSlopeMax) return [];
 
   // Support slope must be rising
   const supSlopePct = (regLow.slope / midPrice) * 100 * 100;
-  if (supSlopePct < rules.supportSlopeMin) return [];
+  if (supSlopePct < supSlopeMin) return [];
 
   const barStart = Math.min(pivHigh[0][0], pivLow[0][0]);
   const barEnd   = Math.max(pivHigh[pivHigh.length - 1][0], pivLow[pivLow.length - 1][0]);
@@ -802,12 +823,13 @@ function _detectTriangleAscGeo(ohlcv: OHLCVBar[], rules: TriangleAscRules): Dete
 export function detectPatternsGeometric(
   ohlcv: OHLCVBar[],
   rules: PatternRulesConfig,
+  tolerance = 1.5,
 ): DetectedPattern[] {
   const all: DetectedPattern[] = [
-    ..._detectRangeGeo(ohlcv, rules.Range),
-    ..._detectWGeo(ohlcv, rules.W),
-    ..._detectETEGeo(ohlcv, rules.ETE),
-    ..._detectTriangleAscGeo(ohlcv, rules.TriangleAscendant),
+    ..._detectRangeGeo(ohlcv, rules.Range, tolerance),
+    ..._detectWGeo(ohlcv, rules.W, tolerance),
+    ..._detectETEGeo(ohlcv, rules.ETE, tolerance),
+    ..._detectTriangleAscGeo(ohlcv, rules.TriangleAscendant, tolerance),
   ];
   return _deduplicate(all).sort((a, b) => b.score - a.score);
 }

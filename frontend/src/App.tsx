@@ -15,11 +15,14 @@ import type { TickerList, Session, Favorite, TradeReference, PatternAnnotation }
 import {
   getFavorites, upsertFavorite, removeFavorite, favoriteKey,
   migrateFromLocalStorage, getTradeReferences, getPatternAnnotations,
-  createTradeReference,
+  createTradeReference, saveSession,
 } from './lib/api-storage';
 import { buildTemplates, DEFAULT_PATTERN_RULES } from './lib/patternLearning';
 import type { PatternTemplate, DetectedPattern, PatternRulesConfig } from './lib/patternLearning';
 import { PatternRulesPanel } from './components/PatternRulesPanel';
+import { TopTradesPanel } from './components/TopTradesPanel';
+import { SettingsModal } from './components/SettingsModal';
+import { loadGeminiApiKey, loadGeminiModel, saveGeminiModel, loadGeminiPrompt, saveGeminiPrompt } from './lib/geminiClient';
 import type { PrefilledAnnotation } from './components/AnnotationModal';
 import './App.css';
 
@@ -129,6 +132,11 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(300);
   const sidebarWidthRef = useRef(300);
 
+  const [apiKey, setApiKey] = useState(loadGeminiApiKey);
+  const [geminiModel, setGeminiModel] = useState(loadGeminiModel);
+  const [geminiPrompt, setGeminiPrompt] = useState(loadGeminiPrompt);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     const startX = e.clientX;
@@ -234,6 +242,7 @@ export default function App() {
 
   const debouncedParams = useDebounce(analysisParams, 300);
   const fetchAbortRef = useRef<AbortController | null>(null);
+  const autoSavePending = useRef(false);
   useEffect(() => () => fetchAbortRef.current?.abort(), []);
 
   // Initial data load
@@ -291,9 +300,23 @@ export default function App() {
     const computed: TickerResult[] = [];
     for (const [ticker, ohlcv] of entries) {
       const analysis = analyzeOhlcv(ohlcv, debouncedParams, templates, patternRules);
-      computed.push({ ticker, ohlcv, ...analysis });
+      // Injecter le ticker dans chaque CandidateTrade (PatternEngine ne l'a pas)
+      const candidate_trades = analysis.candidate_trades.map(c => ({ ...c, ticker }));
+      computed.push({ ticker, ohlcv, ...analysis, candidate_trades });
     }
     setResults(computed);
+
+    if (autoSavePending.current) {
+      autoSavePending.current = false;
+      const tickers = computed.map(r => r.ticker);
+      const now = new Date();
+      const dateStr = now.toLocaleDateString('fr-FR', { day: '2-digit', month: '2-digit' });
+      const timeStr = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+      const label = tickers.length <= 3 ? tickers.join(', ') : `${tickers.length} tickers`;
+      const name = `Auto • ${label} ${currentPeriod}/${currentInterval} – ${dateStr} ${timeStr}`;
+      saveSession(name, currentPeriod, currentInterval, debouncedParams, tickers, computed, true)
+        .catch(() => {});
+    }
   }, [ohlcvByTicker, debouncedParams, templates]);
 
   const handleClearAll = () => {
@@ -340,6 +363,7 @@ export default function App() {
       setFromCache(data.results.length > 0 ? allCached : null);
       setMissingTickers(missing);
       if (data.results.length === 0) setNoData(true);
+      if (!allCached && data.results.length > 0) autoSavePending.current = true;
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return;
       setError("Impossible de contacter le backend. Vérifiez qu'uvicorn tourne sur le port 8000.");
@@ -368,6 +392,7 @@ export default function App() {
       setOhlcvByTicker({});
       const tickers = session.tickers ?? session.snapshot.map(r => r.ticker);
       setSelectedList({ id: '_restore_', name: session.name, tickers, createdAt: 0 });
+      autoSavePending.current = false;
       handleFetch({ tickers, period: session.period, interval: session.interval });
     }
   };
@@ -447,9 +472,36 @@ export default function App() {
                 )}
               </div>
             )}
+            {/* Bouton Paramètres */}
+            <button
+              onClick={() => setSettingsOpen(true)}
+              title="Paramètres"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-xs transition-colors"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+              </svg>
+              {apiKey ? (
+                <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Gemini configuré" />
+              ) : (
+                <span className="text-slate-600 text-xs">Paramètres</span>
+              )}
+            </button>
           </div>
         </div>
       </header>
+
+      {settingsOpen && (
+        <SettingsModal
+          apiKey={apiKey}
+          onSave={setApiKey}
+          geminiModel={geminiModel}
+          onSaveModel={m => { setGeminiModel(m); saveGeminiModel(m); }}
+          geminiPrompt={geminiPrompt}
+          onSavePrompt={p => { setGeminiPrompt(p); saveGeminiPrompt(p); }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
       <div className="max-w-[1600px] mx-auto px-4 pb-16">
         <div className="flex gap-0 items-start">
@@ -498,6 +550,15 @@ export default function App() {
             <PatternRulesPanel
               rules={patternRules}
               onRulesChange={setPatternRules}
+            />
+
+            <TopTradesPanel
+              results={results}
+              timeframe={currentInterval}
+              apiKey={apiKey}
+              geminiModel={geminiModel}
+              geminiPrompt={geminiPrompt}
+              onOpenSettings={() => setSettingsOpen(true)}
             />
 
             <SessionPanel
