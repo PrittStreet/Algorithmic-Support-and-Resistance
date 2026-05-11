@@ -1,34 +1,5 @@
-// Async API client — all data lives in SQLite via the FastAPI backend.
-
 import type { AnalysisParams } from '../sr';
-import type { OHLCVBar, SRLevel, WPattern, BreakoutScore } from '../api';
-
-export interface TradeReference {
-  id: string;
-  ticker: string;
-  dateIn: string;   // YYYY-MM-DD
-  dateOut: string;  // YYYY-MM-DD
-  interval: string;
-  notes: string | null;
-  createdAt: number;
-}
-
-export interface AnnotationPoint {
-  order: number;
-  label: string;
-  price: number;
-  time: number;    // unix seconds
-  x_rel: number;  // 0–1 relative position dans la fenêtre temporelle de la référence
-  y_rel: number;  // 0–1 relative position dans la fenêtre de prix (0=bas, 1=haut)
-}
-
-export interface PatternAnnotation {
-  id: string;
-  tradeRefId: string;
-  patternType: string;
-  points: AnnotationPoint[];
-  createdAt: number;
-}
+import type { OHLCVBar, SRLevel, BreakoutScore } from '../api';
 
 export interface TickerList {
   id: string;
@@ -59,27 +30,7 @@ export interface SessionEntry {
   ticker: string;
   ohlcv?: OHLCVBar[];
   sr_levels: SRLevel[];
-  w_patterns?: WPattern[];
   score?: BreakoutScore;
-  is_coiling?: boolean;
-}
-
-export interface RoiAnnotation {
-  type: 'roi';
-  t1: number;  // unix seconds (start time, inclusive)
-  t2: number;  // unix seconds (end time, inclusive)
-  p1: number;  // price bound A
-  p2: number;  // price bound B
-}
-
-export interface FeedbackEntry {
-  id: string;
-  ticker: string;
-  createdAt: number;
-  vote: 'like' | 'dislike';
-  tags: string[];
-  fingerprint: Record<string, number>;
-  annotation?: RoiAnnotation | null;
 }
 
 export interface Favorite {
@@ -167,30 +118,6 @@ export async function deleteSession(id: string) {
   return api<void>('DELETE', `/sessions/${id}`);
 }
 
-// ── Feedback ──────────────────────────────────────────────────────────────────
-
-export async function getFeedback(): Promise<FeedbackEntry[]> {
-  return api<FeedbackEntry[]>('GET', '/feedback');
-}
-
-export async function upsertFeedback(
-  ticker: string,
-  vote: 'like' | 'dislike',
-  tags: string[],
-  fingerprint: Record<string, number>,
-  annotation?: RoiAnnotation | null,
-): Promise<FeedbackEntry> {
-  return api<FeedbackEntry>('POST', '/feedback', { ticker, vote, tags, fingerprint, annotation: annotation ?? null });
-}
-
-export async function removeFeedback(ticker: string) {
-  return api<void>('DELETE', `/feedback/${ticker}`);
-}
-
-export async function clearFeedback() {
-  return api<void>('DELETE', '/feedback');
-}
-
 // ── Favorites ─────────────────────────────────────────────────────────────────
 
 export async function getFavorites(): Promise<Favorite[]> {
@@ -219,50 +146,6 @@ export async function removeFavorite(ticker: string, period: string, interval: s
   return api<void>('DELETE', `/favorites/${ticker}/${period}/${interval}`);
 }
 
-// ── Trade References ──────────────────────────────────────────────────────────
-
-export async function getTradeReferences(): Promise<TradeReference[]> {
-  return api<TradeReference[]>('GET', '/trade-references');
-}
-
-export async function createTradeReference(
-  ticker: string, dateIn: string, dateOut: string, interval: string, notes?: string | null,
-): Promise<TradeReference> {
-  return api<TradeReference>('POST', '/trade-references', { ticker, date_in: dateIn, date_out: dateOut, interval, notes: notes ?? null });
-}
-
-export async function deleteTradeReference(id: string): Promise<void> {
-  return api<void>('DELETE', `/trade-references/${id}`);
-}
-
-// ── Pattern Annotations ───────────────────────────────────────────────────────
-
-export async function getPatternAnnotations(tradeRefId?: string): Promise<PatternAnnotation[]> {
-  const qs = tradeRefId ? `?trade_ref_id=${tradeRefId}` : '';
-  return api<PatternAnnotation[]>('GET', `/pattern-annotations${qs}`);
-}
-
-export async function upsertPatternAnnotation(
-  tradeRefId: string, patternType: string, points: AnnotationPoint[],
-): Promise<PatternAnnotation> {
-  return api<PatternAnnotation>('POST', '/pattern-annotations', { trade_ref_id: tradeRefId, pattern_type: patternType, points });
-}
-
-export async function deletePatternAnnotation(id: string): Promise<void> {
-  return api<void>('DELETE', `/pattern-annotations/${id}`);
-}
-
-// ── OHLCV range fetch (for annotation modal) ──────────────────────────────────
-
-export async function fetchOhlcvRange(
-  ticker: string, dateIn: string, dateOut: string, interval: string,
-): Promise<OHLCVBar[]> {
-  const res = await api<{ ticker: string; ohlcv: OHLCVBar[] }>(
-    'POST', '/ohlcv-range', { ticker, date_in: dateIn, date_out: dateOut, interval }
-  );
-  return res.ohlcv;
-}
-
 // ── One-time migration from localStorage → SQLite ─────────────────────────────
 
 export async function migrateFromLocalStorage(): Promise<void> {
@@ -276,15 +159,14 @@ export async function migrateFromLocalStorage(): Promise<void> {
   const lists    = readLocal<TickerList>('sr_ticker_lists');
   const presets  = readLocal<Preset>('sr_presets');
   const sessions = readLocal<Session>('sr_sessions');
-  const feedback = readLocal<FeedbackEntry>('sr_feedback');
 
-  if (lists.length === 0 && presets.length === 0 && sessions.length === 0 && feedback.length === 0) {
+  if (lists.length === 0 && presets.length === 0 && sessions.length === 0) {
     localStorage.setItem('sr_migrated_v2', 'true');
     return;
   }
 
   try {
-    await api<{ migrated: number }>('POST', '/migrate', { lists, presets, sessions, feedback });
+    await api<{ migrated: number }>('POST', '/migrate', { lists, presets, sessions });
     localStorage.setItem('sr_migrated_v2', 'true');
     console.log('[migration] localStorage → SQLite done');
   } catch (e) {

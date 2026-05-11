@@ -9,21 +9,15 @@ export interface OHLCVBar {
 
 export interface SRLevel {
   price: number;
+  upper?: number;       // borne haute de la zone (price * (1 + dif/100))
+  lower?: number;       // borne basse de la zone  (price * (1 - dif/100))
   start_time: number;
   end_time: number;
   type: 'support' | 'resistance';
   touches: number;
+  broken_out?: boolean;  // close > upper (résistance) ou close < lower (support)
+  re_entered?: boolean;  // après broken_out, repassé de l'autre côté → zone obsolète
   obsolete?: boolean;
-}
-
-export interface WPattern {
-  low1_price: number;
-  low1_time: number;
-  low2_price: number;
-  low2_time: number;
-  neckline_price: number;
-  neckline_time: number;
-  confirmed: boolean;
 }
 
 export interface BreakoutScore {
@@ -31,7 +25,7 @@ export interface BreakoutScore {
   tightness: number;    // 0–40 : range étroit
   proximity: number;    // 0–40 : prix proche de la résistance
   accumulation: number; // 0–20 : asymétrie touches support/résistance
-  pattern_bonus: number; // 0–60 : bonus templates (0–40) + patterns géométriques (0–20)
+  pattern_bonus: number;
   label: 'fort' | 'modéré' | 'faible' | null;
 }
 
@@ -39,11 +33,7 @@ export interface TickerResult {
   ticker: string;
   ohlcv: OHLCVBar[];
   sr_levels: SRLevel[];
-  w_patterns: WPattern[];
   score: BreakoutScore;
-  is_coiling: boolean;
-  matched_patterns: import('./lib/patternLearning').DetectedPattern[];
-  candidate_trades: import('./lib/patternEngine').CandidateTrade[];
 }
 
 export interface FetchParams {

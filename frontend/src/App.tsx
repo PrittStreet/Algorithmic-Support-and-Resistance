@@ -5,25 +5,15 @@ import { ChartCard } from './components/ChartCard';
 import { ListPanel } from './components/ListPanel';
 import { SessionPanel } from './components/SessionPanel';
 import { FavoritesPanel } from './components/FavoritesPanel';
-import { TradeReferencePanel } from './components/TradeReferencePanel';
-import { AnnotationModal } from './components/AnnotationModal';
 import { fetchOhlcv } from './api';
-import { analyzeOhlcv } from './sr';
+import { analyzeOhlcv, computeSupportScore } from './sr';
 import type { OHLCVBar, TickerResult, FetchParams } from './api';
 import type { AnalysisParams } from './sr';
-import type { TickerList, Session, Favorite, TradeReference, PatternAnnotation } from './lib/api-storage';
+import type { TickerList, Session, Favorite } from './lib/api-storage';
 import {
   getFavorites, upsertFavorite, removeFavorite, favoriteKey,
-  migrateFromLocalStorage, getTradeReferences, getPatternAnnotations,
-  createTradeReference, saveSession,
+  migrateFromLocalStorage, saveSession,
 } from './lib/api-storage';
-import { buildTemplates, DEFAULT_PATTERN_RULES } from './lib/patternLearning';
-import type { PatternTemplate, DetectedPattern, PatternRulesConfig } from './lib/patternLearning';
-import { PatternRulesPanel } from './components/PatternRulesPanel';
-import { TopTradesPanel } from './components/TopTradesPanel';
-import { SettingsModal } from './components/SettingsModal';
-import { loadGeminiApiKey, loadGeminiModel, saveGeminiModel, loadGeminiPrompt, saveGeminiPrompt } from './lib/geminiClient';
-import type { PrefilledAnnotation } from './components/AnnotationModal';
 import './App.css';
 
 function useDebounce<T>(value: T, delay: number): T {
@@ -35,107 +25,13 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced;
 }
 
-type LevelFilter = 'all' | 'any' | 'support' | 'resistance';
-type PatternFilter = 'w_forming' | 'w_confirmed' | 'coil' | 'score' | 'favorites' | 'matched' | 'proximity';
-
-const PROXIMITY_THRESHOLD_PCT = 3; // % de tolérance prix↔dernier point du pattern
-
-function patternProximityPct(r: TickerResult): number {
-  if (r.matched_patterns.length === 0 || r.ohlcv.length === 0) return Infinity;
-  const lastPrice = r.ohlcv[r.ohlcv.length - 1].close;
-  if (lastPrice <= 0) return Infinity;
-  // Prend le meilleur pattern (score le plus haut) et son dernier point comme "zone de déclenchement"
-  const best = r.matched_patterns.reduce((a, b) => (a.score >= b.score ? a : b));
-  const trigger = best.points[best.points.length - 1];
-  if (!trigger) return Infinity;
-  return Math.abs(lastPrice - trigger.price) / lastPrice * 100;
-}
+type LevelFilter = 'all' | 'any';
+type ActiveFilter = 'score' | 'favorites';
 type SortMode = 'score' | 'ticker';
-
-function CreateRefDialog({
-  ticker, ohlcv, interval, onClose, onCreated,
-}: {
-  ticker: string;
-  ohlcv: OHLCVBar[];
-  interval: string;
-  onClose: () => void;
-  onCreated: (ref: TradeReference) => void;
-}) {
-  const fmt = (ts: number) => new Date(ts * 1000).toISOString().slice(0, 10);
-  const [dateIn, setDateIn] = useState(ohlcv.length > 0 ? fmt(ohlcv[0].time) : '');
-  const [dateOut, setDateOut] = useState(ohlcv.length > 0 ? fmt(ohlcv[ohlcv.length - 1].time) : '');
-  const [note, setNote] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [err, setErr] = useState('');
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setSaving(true);
-    setErr('');
-    try {
-      const ref = await createTradeReference(ticker, dateIn, dateOut, interval, note || `Référence manuelle ${ticker}`);
-      onCreated(ref);
-    } catch (ex) {
-      setErr(ex instanceof Error ? ex.message : 'Erreur');
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50" onClick={onClose}>
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 w-full max-w-sm space-y-4" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h3 className="text-white font-semibold">Créer une référence</h3>
-          <button onClick={onClose} className="text-slate-500 hover:text-white text-xl leading-none">×</button>
-        </div>
-        <form onSubmit={handleSubmit} className="space-y-3">
-          <div>
-            <label className="text-xs text-slate-400">Ticker</label>
-            <div className="mt-1 px-3 py-2 bg-slate-800 rounded-lg text-white text-sm font-mono">{ticker}</div>
-          </div>
-          <div className="flex gap-2">
-            <div className="flex-1">
-              <label className="text-xs text-slate-400">Date entrée</label>
-              <input type="date" value={dateIn} onChange={e => setDateIn(e.target.value)}
-                className="mt-1 w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500" />
-            </div>
-            <div className="flex-1">
-              <label className="text-xs text-slate-400">Date sortie</label>
-              <input type="date" value={dateOut} onChange={e => setDateOut(e.target.value)}
-                className="mt-1 w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500" />
-            </div>
-          </div>
-          <div>
-            <label className="text-xs text-slate-400">Note (optionnelle)</label>
-            <input type="text" value={note} onChange={e => setNote(e.target.value)}
-              placeholder={`Référence manuelle ${ticker}`}
-              className="mt-1 w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-white text-sm focus:outline-none focus:border-blue-500" />
-          </div>
-          {err && <p className="text-red-400 text-xs">{err}</p>}
-          <div className="flex gap-2 pt-1">
-            <button type="button" onClick={onClose}
-              className="flex-1 px-4 py-2 rounded-lg bg-slate-800 text-slate-300 hover:bg-slate-700 text-sm transition-colors">
-              Annuler
-            </button>
-            <button type="submit" disabled={saving || !dateIn || !dateOut}
-              className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-500 text-sm font-medium disabled:opacity-50 transition-colors">
-              {saving ? 'Création…' : 'Créer & Annoter'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
-  );
-}
 
 export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(300);
   const sidebarWidthRef = useRef(300);
-
-  const [apiKey, setApiKey] = useState(loadGeminiApiKey);
-  const [geminiModel, setGeminiModel] = useState(loadGeminiModel);
-  const [geminiPrompt, setGeminiPrompt] = useState(loadGeminiPrompt);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -170,11 +66,13 @@ export default function App() {
   const [fromCache, setFromCache] = useState<boolean | null>(null);
 
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('any');
-  const [activePatternFilters, setActivePatternFilters] = useState<Set<PatternFilter>>(new Set());
+  const [activeFilters, setActiveFilters] = useState<Set<ActiveFilter>>(new Set());
   const [sortMode, setSortMode] = useState<SortMode>('score');
+  const [srTypeFilter, setSrTypeFilter] = useState<'all' | 'support' | 'resistance'>('all');
+  const [zoneOpacity, setZoneOpacity] = useState(0.4);
 
-  const togglePatternFilter = (f: PatternFilter) =>
-    setActivePatternFilters(prev => {
+  const toggleFilter = (f: ActiveFilter) =>
+    setActiveFilters(prev => {
       const next = new Set(prev);
       if (next.has(f)) next.delete(f); else next.add(f);
       return next;
@@ -188,79 +86,16 @@ export default function App() {
   const [favorites, setFavorites] = useState<Favorite[]>([]);
   const [missingTickers, setMissingTickers] = useState<string[]>([]);
 
-  // Trade Reference system
-  const [tradeRefs, setTradeRefs] = useState<TradeReference[]>([]);
-  const [annotations, setAnnotations] = useState<PatternAnnotation[]>([]);
-  const [annotatingRef, setAnnotatingRef] = useState<TradeReference | null>(null);
-  const [prefilledAnnotation, setPrefilledAnnotation] = useState<PrefilledAnnotation | null>(null);
-  const [templates, setTemplates] = useState<PatternTemplate[]>([]);
-  const [manualRefState, setManualRefState] = useState<{ ticker: string; ohlcv: OHLCVBar[] } | null>(null);
-
-  const [patternRules, setPatternRules] = useState<PatternRulesConfig>(() => {
-    try {
-      const saved = localStorage.getItem('patternRules');
-      if (!saved) return DEFAULT_PATTERN_RULES;
-      const parsed = JSON.parse(saved) as Partial<PatternRulesConfig>;
-      // Deep merge with defaults so new fields survive upgrades
-      return {
-        Range:              { ...DEFAULT_PATTERN_RULES.Range,              ...(parsed.Range              ?? {}) },
-        W:                  { ...DEFAULT_PATTERN_RULES.W,                  ...(parsed.W                  ?? {}) },
-        ETE:                { ...DEFAULT_PATTERN_RULES.ETE,                ...(parsed.ETE                ?? {}) },
-        TriangleAscendant:  { ...DEFAULT_PATTERN_RULES.TriangleAscendant,  ...(parsed.TriangleAscendant  ?? {}) },
-      };
-    } catch { return DEFAULT_PATTERN_RULES; }
-  });
-
-  // Persist rules whenever they change
-  useEffect(() => {
-    localStorage.setItem('patternRules', JSON.stringify(patternRules));
-  }, [patternRules]);
-
-  const handlePromotePattern = async (mp: DetectedPattern, ticker: string, interval: string) => {
-    if (mp.points.length < 2) return;
-    const firstTime = mp.points[0].time;
-    const lastTime = mp.points[mp.points.length - 1].time;
-    const span = Math.max(lastTime - firstTime, 86400);
-    const padding = Math.min(span * 0.25, 86400 * 30);
-    const dateIn = new Date((firstTime - padding) * 1000).toISOString().slice(0, 10);
-    const dateOut = new Date((lastTime + padding) * 1000).toISOString().slice(0, 10);
-    try {
-      const ref = await createTradeReference(
-        ticker, dateIn, dateOut, interval,
-        `Auto-promu: ${mp.pattern_type} (${mp.score}%)`,
-      );
-      setTradeRefs(prev => [ref, ...prev]);
-      setPrefilledAnnotation({
-        patternType: mp.pattern_type,
-        points: mp.points.map(pt => ({ label: pt.label, price: pt.price, time: pt.time })),
-      });
-      setAnnotatingRef(ref);
-    } catch (e) {
-      console.error('[Promote] Failed:', e);
-    }
-  };
-
   const debouncedParams = useDebounce(analysisParams, 300);
   const fetchAbortRef = useRef<AbortController | null>(null);
   const autoSavePending = useRef(false);
   useEffect(() => () => fetchAbortRef.current?.abort(), []);
 
-  // Initial data load
   useEffect(() => {
     migrateFromLocalStorage().then(() => {
       getFavorites().then(setFavorites);
-      getTradeReferences().then(setTradeRefs);
-      getPatternAnnotations().then(anns => {
-        setAnnotations(anns);
-        setTemplates(buildTemplates(anns));
-      });
     });
   }, []);
-
-  // Rebuild templates whenever annotations change
-  useEffect(() => {
-    setTemplates(buildTemplates(annotations));
-  }, [annotations]);
 
   const favoriteSet = useMemo(() => {
     const s = new Set<string>();
@@ -293,17 +128,15 @@ export default function App() {
     }
   };
 
-  // Recompute analysis whenever data / params / templates change
+  // Recompute analysis whenever data or params change
   useEffect(() => {
     const entries = Object.entries(ohlcvByTicker);
     if (entries.length === 0) { setResults([]); return; }
-    const computed: TickerResult[] = [];
-    for (const [ticker, ohlcv] of entries) {
-      const analysis = analyzeOhlcv(ohlcv, debouncedParams, templates, patternRules);
-      // Injecter le ticker dans chaque CandidateTrade (PatternEngine ne l'a pas)
-      const candidate_trades = analysis.candidate_trades.map(c => ({ ...c, ticker }));
-      computed.push({ ticker, ohlcv, ...analysis, candidate_trades });
-    }
+    const computed: TickerResult[] = entries.map(([ticker, ohlcv]) => ({
+      ticker,
+      ohlcv,
+      ...analyzeOhlcv(ohlcv, debouncedParams),
+    }));
     setResults(computed);
 
     if (autoSavePending.current) {
@@ -317,7 +150,7 @@ export default function App() {
       saveSession(name, currentPeriod, currentInterval, debouncedParams, tickers, computed, true)
         .catch(() => {});
     }
-  }, [ohlcvByTicker, debouncedParams, templates]);
+  }, [ohlcvByTicker, debouncedParams]);
 
   const handleClearAll = () => {
     fetchAbortRef.current?.abort();
@@ -400,48 +233,44 @@ export default function App() {
   const loadedTickers = new Set(Object.keys(ohlcvByTicker));
   const hasData = loadedTickers.size > 0;
 
+  // ── Display results with dynamic score based on srTypeFilter ──
+  const displayResults = useMemo(() =>
+    srTypeFilter === 'support'
+      ? results.map(r => ({ ...r, score: computeSupportScore(r.ohlcv, r.sr_levels) }))
+      : results,
+    [results, srTypeFilter]
+  );
+
   // ── Filtering ──
-  const afterLevelFilter = results.filter(r => {
+  const afterTypeFilter = displayResults.filter(r => {
+    if (srTypeFilter === 'support')    return r.sr_levels.some(l => l.type === 'support'    && !l.obsolete);
+    if (srTypeFilter === 'resistance') return r.sr_levels.some(l => l.type === 'resistance' && !l.obsolete);
+    return true;
+  });
+
+  const afterLevelFilter = afterTypeFilter.filter(r => {
     if (levelFilter === 'all') return true;
-    if (levelFilter === 'any') return r.sr_levels.length > 0;
-    if (levelFilter === 'support') return r.sr_levels.some(l => l.type === 'support');
-    return r.sr_levels.some(l => l.type === 'resistance');
+    return r.sr_levels.length > 0;
   });
 
   const filtered = afterLevelFilter.filter(r => {
-    if (activePatternFilters.size === 0) return true;
-    if (activePatternFilters.has('w_forming')   && !r.w_patterns.some(w => !w.confirmed)) return false;
-    if (activePatternFilters.has('w_confirmed') && !r.w_patterns.some(w => w.confirmed)) return false;
-    if (activePatternFilters.has('coil')        && !r.is_coiling) return false;
-    if (activePatternFilters.has('score')       && r.score.total < 50) return false;
-    if (activePatternFilters.has('favorites')   && !isFavoriteNow(r.ticker)) return false;
-    if (activePatternFilters.has('matched')     && r.matched_patterns.length === 0) return false;
-    if (activePatternFilters.has('proximity')   && patternProximityPct(r) > PROXIMITY_THRESHOLD_PCT) return false;
+    if (activeFilters.size === 0) return true;
+    if (activeFilters.has('score')     && r.score.total < 50) return false;
+    if (activeFilters.has('favorites') && !isFavoriteNow(r.ticker)) return false;
     return true;
   });
 
   const sorted = [...filtered].sort((a, b) => {
-    // Quand le filtre proximité est actif, trie par proximité croissante (plus proche en haut)
-    if (activePatternFilters.has('proximity') && activePatternFilters.size === 1) {
-      return patternProximityPct(a) - patternProximityPct(b);
-    }
-    if (sortMode === 'score') {
-      return b.score.total - a.score.total;
-    }
+    if (sortMode === 'score') return b.score.total - a.score.total;
     return a.ticker.localeCompare(b.ticker);
   });
 
   // ── Counters ──
-  const withLevels     = results.filter(r => r.sr_levels.length > 0).length;
-  const withSupport    = results.filter(r => r.sr_levels.some(l => l.type === 'support')).length;
-  const withResistance = results.filter(r => r.sr_levels.some(l => l.type === 'resistance')).length;
-  const wForming       = results.filter(r => r.w_patterns.some(w => !w.confirmed)).length;
-  const wConfirmed     = results.filter(r => r.w_patterns.some(w => w.confirmed)).length;
-  const coiling        = results.filter(r => r.is_coiling).length;
-  const highScore      = results.filter(r => r.score.total >= 50).length;
-  const favCount       = results.filter(r => isFavoriteNow(r.ticker)).length;
-  const matchedCount   = results.filter(r => r.matched_patterns.length > 0).length;
-  const proximityCount = results.filter(r => patternProximityPct(r) <= PROXIMITY_THRESHOLD_PCT).length;
+  const withLevels       = results.filter(r => r.sr_levels.length > 0).length;
+  const countSupports    = results.filter(r => r.sr_levels.some(l => l.type === 'support'    && !l.obsolete)).length;
+  const countResistances = results.filter(r => r.sr_levels.some(l => l.type === 'resistance' && !l.obsolete)).length;
+  const highScore        = displayResults.filter(r => r.score.total >= 50).length;
+  const favCount         = results.filter(r => isFavoriteNow(r.ticker)).length;
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">
@@ -451,57 +280,22 @@ export default function App() {
             <h1 className="text-lg font-bold tracking-tight">
               <span className="text-blue-400">S/R</span> Analyzer
             </h1>
-            <p className="text-slate-500 text-xs mt-0.5">Support &amp; Résistance · Apprentissage de patterns</p>
+            <p className="text-slate-500 text-xs mt-0.5">Support &amp; Résistance algorithmique</p>
           </div>
-          <div className="flex items-center gap-3">
-            {templates.length > 0 && (
-              <div className="flex items-center gap-1.5 text-xs">
-                <span className="w-2 h-2 rounded-full bg-blue-400 animate-pulse" />
-                <span className="text-blue-400 font-medium">{templates.length} template{templates.length > 1 ? 's' : ''} actif{templates.length > 1 ? 's' : ''}</span>
-              </div>
-            )}
-            {hasData && (
-              <div className="flex items-center gap-2 text-xs text-slate-400">
-                <span className="font-mono text-blue-400">{activeTimeframe?.interval} · {activeTimeframe?.period}</span>
-                <span className="text-slate-600">·</span>
-                <span>{loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''}</span>
-                {fromCache !== null && (
-                  <span className={`px-2 py-0.5 rounded-full ${fromCache ? 'bg-slate-800 text-slate-500' : 'bg-blue-950 text-blue-400'}`}>
-                    {fromCache ? 'cache' : 'fresh'}
-                  </span>
-                )}
-              </div>
-            )}
-            {/* Bouton Paramètres */}
-            <button
-              onClick={() => setSettingsOpen(true)}
-              title="Paramètres"
-              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white text-xs transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="3"/><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
-              </svg>
-              {apiKey ? (
-                <span className="w-1.5 h-1.5 rounded-full bg-green-400" title="Gemini configuré" />
-              ) : (
-                <span className="text-slate-600 text-xs">Paramètres</span>
+          {hasData && (
+            <div className="flex items-center gap-2 text-xs text-slate-400">
+              <span className="font-mono text-blue-400">{activeTimeframe?.interval} · {activeTimeframe?.period}</span>
+              <span className="text-slate-600">·</span>
+              <span>{loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''}</span>
+              {fromCache !== null && (
+                <span className={`px-2 py-0.5 rounded-full ${fromCache ? 'bg-slate-800 text-slate-500' : 'bg-blue-950 text-blue-400'}`}>
+                  {fromCache ? 'cache' : 'fresh'}
+                </span>
               )}
-            </button>
-          </div>
+            </div>
+          )}
         </div>
       </header>
-
-      {settingsOpen && (
-        <SettingsModal
-          apiKey={apiKey}
-          onSave={setApiKey}
-          geminiModel={geminiModel}
-          onSaveModel={m => { setGeminiModel(m); saveGeminiModel(m); }}
-          geminiPrompt={geminiPrompt}
-          onSavePrompt={p => { setGeminiPrompt(p); saveGeminiPrompt(p); }}
-          onClose={() => setSettingsOpen(false)}
-        />
-      )}
 
       <div className="max-w-[1600px] mx-auto px-4 pb-16">
         <div className="flex gap-0 items-start">
@@ -517,6 +311,15 @@ export default function App() {
               onSelect={list => setSelectedList(list)}
             />
 
+            <SessionPanel
+              hasData={hasData}
+              period={currentPeriod}
+              interval={currentInterval}
+              params={analysisParams}
+              results={results}
+              onRestore={handleRestoreSession}
+            />
+
             <TickerForm
               onFetch={handleFetch}
               loading={loading}
@@ -530,44 +333,12 @@ export default function App() {
               onIntervalChange={setCurrentInterval}
             />
 
-            <TradeReferencePanel
-              refs={tradeRefs}
-              annotations={annotations}
-              onRefsChange={(newRefs) => {
-                setTradeRefs(newRefs);
-                const activeIds = new Set(newRefs.map(r => r.id));
-                setAnnotations(prev => prev.filter(a => activeIds.has(a.tradeRefId)));
-              }}
-              onAnnotate={ref => setAnnotatingRef(ref)}
-            />
-
             <SRParamsPanel
               params={analysisParams}
               hasData={hasData}
               onParamsChange={setAnalysisParams}
-            />
-
-            <PatternRulesPanel
-              rules={patternRules}
-              onRulesChange={setPatternRules}
-            />
-
-            <TopTradesPanel
-              results={results}
-              timeframe={currentInterval}
-              apiKey={apiKey}
-              geminiModel={geminiModel}
-              geminiPrompt={geminiPrompt}
-              onOpenSettings={() => setSettingsOpen(true)}
-            />
-
-            <SessionPanel
-              hasData={hasData}
-              period={currentPeriod}
-              interval={currentInterval}
-              params={analysisParams}
-              results={results}
-              onRestore={handleRestoreSession}
+              zoneOpacity={zoneOpacity}
+              onZoneOpacityChange={setZoneOpacity}
             />
 
             <FavoritesPanel
@@ -610,11 +381,6 @@ export default function App() {
               <div className="flex flex-col items-center justify-center py-32 text-slate-600">
                 <p className="text-lg font-medium mb-1">Aucune donnée chargée</p>
                 <p className="text-sm">Sélectionne une liste ou saisis des tickers dans le panneau gauche, puis clique sur <span className="text-slate-400">Charger les données</span>.</p>
-                {annotations.length === 0 && (
-                  <p className="text-xs text-slate-700 mt-4 max-w-sm text-center">
-                    Astuce : ajoute des trades de référence dans le panneau <span className="text-slate-500">TRADE REFERENCE</span> pour apprendre tes setups favoris.
-                  </p>
-                )}
               </div>
             )}
 
@@ -623,16 +389,43 @@ export default function App() {
                 {/* ── Filter / sort bar ── */}
                 <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3 mb-4 space-y-2.5">
 
-                  {/* Row 1: niveau + tri */}
+                  {/* Row 0: filtre S/R — contrôle la liste ET les zones visuelles */}
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-slate-500 uppercase tracking-widest">Type</span>
+                    <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                      {([
+                        { key: 'all',        label: 'S + R',       count: results.length },
+                        { key: 'support',    label: 'Supports',    count: countSupports },
+                        { key: 'resistance', label: 'Résistances', count: countResistances },
+                      ] as const).map(({ key, label, count }) => (
+                        <button
+                          key={key}
+                          onClick={() => setSrTypeFilter(key)}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                            srTypeFilter === key
+                              ? key === 'support'    ? 'bg-green-700 text-white'
+                              : key === 'resistance' ? 'bg-red-700 text-white'
+                              :                        'bg-blue-600 text-white'
+                              : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          {label}
+                          <span className={`text-xs px-1 py-0.5 rounded-full ${srTypeFilter === key ? 'bg-white/20 text-white' : 'bg-slate-700 text-slate-500'}`}>
+                            {count}
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Row 1: présence de niveaux + tri */}
                   <div className="flex items-center justify-between flex-wrap gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="text-xs text-slate-500 uppercase tracking-widest">Niveaux</span>
                       <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
                         {([
-                          { key: 'all',        label: 'Tous', count: results.length },
-                          { key: 'any',        label: 'S/R',  count: withLevels },
-                          { key: 'support',    label: 'Supp', count: withSupport },
-                          { key: 'resistance', label: 'Rés',  count: withResistance },
+                          { key: 'all', label: 'Tous', count: afterTypeFilter.length },
+                          { key: 'any', label: 'S/R',  count: withLevels },
                         ] as const).map(({ key, label, count }) => (
                           <button
                             key={key}
@@ -650,8 +443,41 @@ export default function App() {
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs text-slate-500 uppercase tracking-widest">Trier</span>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                        <button
+                          onClick={() => setActiveFilters(new Set())}
+                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                            activeFilters.size === 0 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                          }`}
+                        >
+                          Tous
+                          <span className={`text-xs px-1 py-0.5 rounded-full ${activeFilters.size === 0 ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                            {afterLevelFilter.length}
+                          </span>
+                        </button>
+                        {([
+                          { key: 'favorites' as ActiveFilter, label: '★ Favoris',  count: favCount,   color: 'text-yellow-400' },
+                          { key: 'score'     as ActiveFilter, label: 'Score ≥ 50', count: highScore,  color: 'text-blue-400' },
+                        ]).map(({ key, label, count, color }) => {
+                          const isActive = activeFilters.has(key);
+                          return (
+                            <button
+                              key={key}
+                              onClick={() => toggleFilter(key)}
+                              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                                isActive ? 'bg-blue-600 text-white' : `${color} hover:text-white`
+                              }`}
+                            >
+                              {label}
+                              <span className={`text-xs px-1 py-0.5 rounded-full ${isActive ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                                {count}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+
                       <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
                         <button
                           onClick={() => setSortMode('score')}
@@ -662,60 +488,14 @@ export default function App() {
                           className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
                         >A–Z</button>
                       </div>
-                    </div>
-                  </div>
 
-                  {/* Row 2: patterns (cumulatifs) */}
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="text-xs text-slate-500 uppercase tracking-widest">Patterns</span>
-                    <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5 flex-wrap">
-                      {/* Reset button */}
-                      <button
-                        onClick={() => setActivePatternFilters(new Set())}
-                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                          activePatternFilters.size === 0
-                            ? 'bg-blue-600 text-white'
-                            : 'text-slate-400 hover:text-white'
-                        }`}
-                      >
-                        Tous
-                        <span className={`text-xs px-1 py-0.5 rounded-full ${activePatternFilters.size === 0 ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                          {afterLevelFilter.length}
-                        </span>
-                      </button>
-                      {([
-                        { key: 'favorites'   as PatternFilter, label: '★ Favoris',   count: favCount,       color: 'text-yellow-400' },
-                        { key: 'matched'     as PatternFilter, label: '◆ Templates', count: matchedCount,   color: 'text-blue-400' },
-                        { key: 'proximity'   as PatternFilter, label: `⊙ Près (≤${PROXIMITY_THRESHOLD_PCT}%)`, count: proximityCount, color: 'text-cyan-400' },
-                        { key: 'w_forming'   as PatternFilter, label: 'W form.',     count: wForming,       color: 'text-yellow-400' },
-                        { key: 'w_confirmed' as PatternFilter, label: 'W conf.',     count: wConfirmed,     color: 'text-green-400' },
-                        { key: 'coil'        as PatternFilter, label: 'Coil',        count: coiling,        color: 'text-purple-400' },
-                        { key: 'score'       as PatternFilter, label: 'Score ≥ 50',  count: highScore,      color: 'text-blue-400' },
-                      ]).map(({ key, label, count, color }) => {
-                        const isActive = activePatternFilters.has(key);
-                        return (
-                          <button
-                            key={key}
-                            onClick={() => togglePatternFilter(key)}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                              isActive ? 'bg-blue-600 text-white' : `${color} hover:text-white`
-                            }`}
-                          >
-                            {label}
-                            <span className={`text-xs px-1 py-0.5 rounded-full ${isActive ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                              {count}
-                            </span>
-                          </button>
-                        );
-                      })}
+                      <p className="text-slate-500 text-xs">
+                        {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
+                        {activeFilters.size > 0 && (
+                          <span className="ml-1 text-blue-400">· {activeFilters.size} filtre{activeFilters.size > 1 ? 's' : ''} actif{activeFilters.size > 1 ? 's' : ''}</span>
+                        )}
+                      </p>
                     </div>
-
-                    <p className="text-slate-500 text-xs ml-auto">
-                      {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
-                      {activePatternFilters.size > 0 && (
-                        <span className="ml-1 text-blue-400">· {activePatternFilters.size} filtre{activePatternFilters.size > 1 ? 's' : ''} actif{activePatternFilters.size > 1 ? 's' : ''}</span>
-                      )}
-                    </p>
                   </div>
                 </div>
 
@@ -732,17 +512,13 @@ export default function App() {
                         ticker={r.ticker}
                         ohlcv={r.ohlcv}
                         srLevels={r.sr_levels}
-                        wPatterns={r.w_patterns}
                         score={r.score}
-                        isCoiling={r.is_coiling}
-                        matchedPatterns={r.matched_patterns}
                         isFavorite={isFavoriteNow(r.ticker)}
                         onToggleFavorite={() => handleToggleFavorite(r.ticker)}
-                        onPromotePattern={(mp) => handlePromotePattern(mp, r.ticker, currentInterval)}
-                        onCreateReference={() => setManualRefState({ ticker: r.ticker, ohlcv: r.ohlcv })}
-                        templates={templates}
                         interval={currentInterval}
                         dif={analysisParams.dif ?? 1.5}
+                        srTypeFilter={srTypeFilter}
+                        zoneOpacity={zoneOpacity}
                       />
                     ))}
                   </div>
@@ -752,33 +528,6 @@ export default function App() {
           </div>
         </div>
       </div>
-
-      {/* ── Annotation Modal ── */}
-      {annotatingRef && (
-        <AnnotationModal
-          tradeRef={annotatingRef}
-          prefilled={prefilledAnnotation}
-          onClose={() => { setAnnotatingRef(null); setPrefilledAnnotation(null); }}
-          onAnnotationsSaved={() => {
-            getPatternAnnotations().then(all => setAnnotations(all));
-          }}
-        />
-      )}
-
-      {/* ── Create Manual Reference Dialog ── */}
-      {manualRefState && (
-        <CreateRefDialog
-          ticker={manualRefState.ticker}
-          ohlcv={manualRefState.ohlcv}
-          interval={currentInterval}
-          onClose={() => setManualRefState(null)}
-          onCreated={ref => {
-            setTradeRefs(prev => [ref, ...prev]);
-            setManualRefState(null);
-            setAnnotatingRef(ref);
-          }}
-        />
-      )}
     </div>
   );
 }

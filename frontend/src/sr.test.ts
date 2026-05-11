@@ -30,9 +30,7 @@ describe('analyzeOhlcv — empty / short inputs', () => {
   it('returns empty analysis for too-few bars', () => {
     const r = analyzeOhlcv(mkBars([100, 101, 102]), PARAMS);
     expect(r.sr_levels).toEqual([]);
-    expect(r.w_patterns).toEqual([]);
     expect(r.score.total).toBe(0);
-    expect(r.is_coiling).toBe(false);
   });
 
   it('handles empty OHLCV', () => {
@@ -43,23 +41,21 @@ describe('analyzeOhlcv — empty / short inputs', () => {
 
 describe('analyzeOhlcv — pivot detection', () => {
   it('detects a repeated resistance from obvious highs', () => {
-    // Series with 3 clear peaks at ~110
     const pts = [
       { h: 100, l: 95,  c: 98 }, { h: 102, l: 96,  c: 100 },
-      { h: 104, l: 98,  c: 101 }, { h: 110, l: 103, c: 109 }, // peak 1
+      { h: 104, l: 98,  c: 101 }, { h: 110, l: 103, c: 109 },
       { h: 105, l: 100, c: 102 }, { h: 101, l: 95,  c: 97 },
       { h: 99,  l: 94,  c: 96 },  { h: 103, l: 97,  c: 101 },
-      { h: 108, l: 102, c: 106 }, { h: 110.5, l: 104, c: 110 }, // peak 2 (~110)
+      { h: 108, l: 102, c: 106 }, { h: 110.5, l: 104, c: 110 },
       { h: 106, l: 100, c: 102 }, { h: 102, l: 96,  c: 98 },
       { h: 100, l: 94,  c: 95 },  { h: 104, l: 98,  c: 102 },
-      { h: 109, l: 103, c: 107 }, { h: 110.2, l: 104, c: 109 }, // peak 3 (~110)
+      { h: 109, l: 103, c: 107 }, { h: 110.2, l: 104, c: 109 },
       { h: 105, l: 99,  c: 100 }, { h: 98,  l: 92,  c: 94 },
       { h: 96,  l: 90,  c: 92 },  { h: 94,  l: 88,  c: 90 },
     ];
     const r = analyzeOhlcv(mkBarsWithHL(pts), PARAMS);
     const res = r.sr_levels.filter(l => l.type === 'resistance');
     expect(res.length).toBeGreaterThan(0);
-    // At least one resistance in the 108-112 band
     expect(res.some(l => l.price >= 108 && l.price <= 112)).toBe(true);
   });
 });
@@ -81,16 +77,5 @@ describe('breakout score', () => {
     expect(r.score.tightness).toBeGreaterThanOrEqual(0);
     expect(r.score.proximity).toBeGreaterThanOrEqual(0);
     expect(r.score.accumulation).toBeGreaterThanOrEqual(0);
-  });
-});
-
-describe('matched_patterns', () => {
-  it('returns empty array when no templates provided', () => {
-    const pts = Array.from({ length: 60 }, (_, i) => {
-      const base = 100 + i * 0.3;
-      return { h: base + 1, l: base - 1, c: base };
-    });
-    const r = analyzeOhlcv(mkBarsWithHL(pts), PARAMS);
-    expect(r.matched_patterns).toEqual([]);
   });
 });
