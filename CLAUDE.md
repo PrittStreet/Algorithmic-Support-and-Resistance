@@ -17,7 +17,7 @@ Application full-stack : **FastAPI (backend) + React/TypeScript (frontend)** pou
 Fonctionnalités principales:
 - **API REST**: endpoints pour OHLCV, analyses S/R, sessions, favoris
 - **Data fetching**: intégration Yahoo Finance (yfinance)
-- **Persistence**: SQLite avec 5 tables principales
+- **Persistence**: SQLite avec 8 tables
 
 **Fichier principal:** `backend/main.py`
 - Routes FastAPI
@@ -26,18 +26,21 @@ Fonctionnalités principales:
 - Gestion des patterns détectés
 - CORS middleware pour localhost:5173
 
-**Base de données (sr_data.db):**
+**Base de données (sr_data.db) — 8 tables :**
 - `ticker_lists`: listes personnalisées de tickers
 - `presets`: configurations d'analyse sauvegardées
 - `sessions`: sessions d'analyse complètes
 - `feedback`: votes/tags utilisateur (like/dislike) + annotations
 - `ohlcv_cache`: cache des données OHLCV (ticker, period, interval)
+- `favorites`: tickers favoris
+- `trade_references`: références de trades
+- `pattern_annotations`: annotations de patterns détectés
 
 ---
 
 ### Frontend (`/frontend`)
 
-**Tech Stack:** React 18 + TypeScript + Vite
+**Tech Stack:** React 19 + TypeScript + Vite
 
 #### Composants principaux
 
@@ -118,5 +121,9 @@ Configurables via `SRParamsPanel`:
 
 ## Scripts
 
-- `start.py`: lance backend + frontend
-- `build.py`: build frontend
+- `start.py`: lance backend + frontend (`--no-build` pour sauter le build React)
+- `build_standalone.py`: build l'application autonome Windows via PyInstaller (`--zip` pour générer l'archive)
+- `sr_analyzer_launcher.py`: entry point PyInstaller (SSL fix + ouverture navigateur + uvicorn)
+- `start_enedis.py`: variante de lancement alternative
+
+> Pour le guide complet de build et distribution, voir **MODOP.md**.
