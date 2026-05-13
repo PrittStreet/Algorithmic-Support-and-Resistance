@@ -81,7 +81,7 @@
  [],
  False,
  False,
- 1778664100,
+ 1778674372,
  [('run.exe',
    'D:\\OneDrive\\Documents\\VS CODE\\Support et '
    'resitance\\Algorithmic-Support-and-Resistance\\.build-venv\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\run.exe',
