@@ -1,4 +1,5 @@
 import type { AnalysisParams } from '../sr';
+import { PresetSelector } from './PresetSelector';
 
 interface Props {
   params: AnalysisParams;
@@ -25,6 +26,11 @@ export function SRParamsPanel({ params, hasData, onParamsChange, zoneOpacity, on
         Paramètres S/R
         {hasData && <span className="ml-2 text-blue-400 normal-case font-normal tracking-normal">· live</span>}
       </p>
+
+      {/* ── Préréglages ── */}
+      <PresetSelector current={params} onLoad={onParamsChange} />
+
+      <div className="mt-3 pt-3 border-t border-slate-700" />
 
       {/* ── Regroupement dif ── */}
       <div>

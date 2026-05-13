@@ -10,9 +10,11 @@ interface Props {
   params: AnalysisParams;
   results: SessionEntry[];
   onRestore: (session: Session) => void;
+  refreshTrigger?: number;
+  onSessionSaved?: () => void;
 }
 
-export function SessionPanel({ hasData, period, interval, params, results, onRestore }: Props) {
+export function SessionPanel({ hasData, period, interval, params, results, onRestore, refreshTrigger, onSessionSaved }: Props) {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [saving, setSaving] = useState(false);
   const [name, setName] = useState('');
@@ -21,7 +23,7 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const refresh = () => getSessions().then(setSessions);
-  useEffect(() => { refresh(); }, []);
+  useEffect(() => { refresh(); }, [refreshTrigger]);
 
   const handleSave = async () => {
     if (!name.trim()) return;
@@ -32,6 +34,7 @@ export function SessionPanel({ hasData, period, interval, params, results, onRes
       setName('');
       setSaving(false);
       refresh();
+      onSessionSaved?.();
     } catch {
       setSaveError('Erreur lors de la sauvegarde. Le serveur est-il démarré ?');
     }

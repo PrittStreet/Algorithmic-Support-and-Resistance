@@ -1,0 +1,64 @@
+('D:\\OneDrive\\Documents\\VS CODE\\Support et '
+ 'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\SR-Analyzer.pkg',
+ {'BINARY': True,
+  'DATA': True,
+  'EXECUTABLE': True,
+  'EXTENSION': True,
+  'PYMODULE': True,
+  'PYSOURCE': True,
+  'PYZ': False,
+  'SPLASH': True,
+  'SYMLINK': False},
+ [('pyi-contents-directory _internal', '', 'OPTION'),
+  ('PYZ-00.pyz',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\PYZ-00.pyz',
+   'PYZ'),
+  ('struct',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\localpycs\\struct.pyc',
+   'PYMODULE'),
+  ('pyimod01_archive',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\localpycs\\pyimod01_archive.pyc',
+   'PYMODULE'),
+  ('pyimod02_importers',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\localpycs\\pyimod02_importers.pyc',
+   'PYMODULE'),
+  ('pyimod03_ctypes',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\localpycs\\pyimod03_ctypes.pyc',
+   'PYMODULE'),
+  ('pyimod04_pywin32',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\build\\sr_analyzer\\localpycs\\pyimod04_pywin32.pyc',
+   'PYMODULE'),
+  ('pyiboot01_bootstrap',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\.build-venv\\Lib\\site-packages\\PyInstaller\\loader\\pyiboot01_bootstrap.py',
+   'PYSOURCE'),
+  ('pyi_rth_inspect',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_inspect.py',
+   'PYSOURCE'),
+  ('pyi_rth_pkgutil',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_pkgutil.py',
+   'PYSOURCE'),
+  ('pyi_rth_multiprocessing',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\.build-venv\\Lib\\site-packages\\PyInstaller\\hooks\\rthooks\\pyi_rth_multiprocessing.py',
+   'PYSOURCE'),
+  ('sr_analyzer_launcher',
+   'D:\\OneDrive\\Documents\\VS CODE\\Support et '
+   'resitance\\Algorithmic-Support-and-Resistance\\sr_analyzer_launcher.py',
+   'PYSOURCE')],
+ 'python311.dll',
+ True,
+ False,
+ False,
+ [],
+ None,
+ None,
+ None)

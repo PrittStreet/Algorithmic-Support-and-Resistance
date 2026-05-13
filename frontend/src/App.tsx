@@ -5,6 +5,7 @@ import { ChartCard } from './components/ChartCard';
 import { ListPanel } from './components/ListPanel';
 import { SessionPanel } from './components/SessionPanel';
 import { FavoritesPanel } from './components/FavoritesPanel';
+import { StatsBar } from './components/StatsBar';
 import { fetchOhlcv } from './api';
 import { analyzeOhlcv, computeSupportScore } from './sr';
 import type { OHLCVBar, TickerResult, FetchParams } from './api';
@@ -59,6 +60,7 @@ export default function App() {
 
   const [ohlcvByTicker, setOhlcvByTicker] = useState<Record<string, OHLCVBar[]>>({});
   const [analysisParams, setAnalysisParams] = useState<AnalysisParams>({ tolerance: 1.5 });
+  const [sessionVersion, setSessionVersion] = useState(0);
   const [results, setResults] = useState<TickerResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -148,6 +150,7 @@ export default function App() {
       const label = tickers.length <= 3 ? tickers.join(', ') : `${tickers.length} tickers`;
       const name = `Auto • ${label} ${currentPeriod}/${currentInterval} – ${dateStr} ${timeStr}`;
       saveSession(name, currentPeriod, currentInterval, debouncedParams, tickers, computed, true)
+        .then(() => setSessionVersion(v => v + 1))
         .catch(() => {});
     }
   }, [ohlcvByTicker, debouncedParams]);
@@ -318,6 +321,8 @@ export default function App() {
               params={analysisParams}
               results={results}
               onRestore={handleRestoreSession}
+              refreshTrigger={sessionVersion}
+              onSessionSaved={() => setSessionVersion(v => v + 1)}
             />
 
             <TickerForm
@@ -346,6 +351,8 @@ export default function App() {
               onFavoritesChange={setFavorites}
               onLoad={handleLoadFavorite}
             />
+
+            <StatsBar />
           </aside>
 
           {/* ── Resize handle ── */}

@@ -93,6 +93,22 @@ export async function deletePreset(id: string) {
   return api<void>('DELETE', `/presets/${id}`);
 }
 
+export async function renamePreset(id: string, name: string): Promise<void> {
+  return api<void>('PATCH', `/presets/${id}`, { name });
+}
+
+// ── Stats ─────────────────────────────────────────────────────────────────────
+
+export interface AppStats {
+  db_size_bytes: number;
+  yahoo_requests: number;
+  cache_entries: number;
+}
+
+export async function fetchStats(): Promise<AppStats> {
+  return api<AppStats>('GET', '/stats');
+}
+
 // ── Sessions ──────────────────────────────────────────────────────────────────
 
 export async function getSessions(): Promise<Session[]> {
