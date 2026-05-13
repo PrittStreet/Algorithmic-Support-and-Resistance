@@ -31,8 +31,9 @@ type ActiveFilter = 'score' | 'favorites';
 type SortMode = 'score' | 'ticker';
 
 export default function App() {
-  const [sidebarWidth, setSidebarWidth] = useState(300);
-  const sidebarWidthRef = useRef(300);
+  const [sidebarWidth, setSidebarWidth] = useState(240);
+  const sidebarWidthRef = useRef(240);
+  const [sidebarTab, setSidebarTab] = useState<'data' | 'sr' | 'favorites'>('data');
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -41,7 +42,7 @@ export default function App() {
     let pending: number | null = null;
     let nextW = startWidth;
     const onMove = (ev: MouseEvent) => {
-      nextW = Math.max(220, Math.min(520, startWidth + ev.clientX - startX));
+      nextW = Math.max(180, Math.min(400, startWidth + ev.clientX - startX));
       if (pending !== null) return;
       pending = requestAnimationFrame(() => {
         setSidebarWidth(nextW);
@@ -72,6 +73,9 @@ export default function App() {
   const [sortMode, setSortMode] = useState<SortMode>('score');
   const [srTypeFilter, setSrTypeFilter] = useState<'all' | 'support' | 'resistance'>('all');
   const [zoneOpacity, setZoneOpacity] = useState(0.4);
+  const [gridCols, setGridCols] = useState<1 | 2 | 3>(() => (Number(localStorage.getItem('gridCols') ?? '2') as 1 | 2 | 3));
+
+  useEffect(() => { localStorage.setItem('gridCols', String(gridCols)); }, [gridCols]);
 
   const toggleFilter = (f: ActiveFilter) =>
     setActiveFilters(prev => {
@@ -276,22 +280,28 @@ export default function App() {
   const favCount         = results.filter(r => isFavoriteNow(r.ticker)).length;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white">
-      <header className="border-b border-slate-800 px-4 py-3 mb-5">
-        <div className="max-w-[1600px] mx-auto flex items-center justify-between gap-4">
-          <div>
-            <h1 className="text-lg font-bold tracking-tight">
-              <span className="text-blue-400">S/R</span> Analyzer
-            </h1>
-            <p className="text-slate-500 text-xs mt-0.5">Support &amp; Résistance algorithmique</p>
+    <div className="min-h-screen bg-[#1e2939] text-white">
+      <header className="sticky top-0 z-20 border-b border-slate-700/60 px-4 py-3 bg-[#1e2939]/95 backdrop-blur-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <div>
+              <h1 className="text-lg font-bold tracking-tight">
+                <span className="text-blue-400">S/R</span> Analyzer
+              </h1>
+              <p className="text-slate-500 text-xs mt-0.5">Support &amp; Résistance algorithmique</p>
+            </div>
+            {loading && <div className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />}
           </div>
           {hasData && (
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <span className="font-mono text-blue-400">{activeTimeframe?.interval} · {activeTimeframe?.period}</span>
-              <span className="text-slate-600">·</span>
-              <span>{loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''}</span>
+            <div className="flex items-center gap-2 text-xs">
+              <span className="px-2 py-1 bg-slate-800 rounded-lg font-mono text-blue-400">
+                {activeTimeframe?.interval} · {activeTimeframe?.period}
+              </span>
+              <span className="px-2 py-1 bg-slate-800 rounded-lg text-slate-300">
+                {loadedTickers.size} ticker{loadedTickers.size > 1 ? 's' : ''}
+              </span>
               {fromCache !== null && (
-                <span className={`px-2 py-0.5 rounded-full ${fromCache ? 'bg-slate-800 text-slate-500' : 'bg-blue-950 text-blue-400'}`}>
+                <span className={`px-2 py-1 rounded-lg ${fromCache ? 'bg-slate-800 text-slate-500' : 'bg-blue-950 text-blue-400'}`}>
                   {fromCache ? 'cache' : 'fresh'}
                 </span>
               )}
@@ -300,59 +310,91 @@ export default function App() {
         </div>
       </header>
 
-      <div className="max-w-[1600px] mx-auto px-4 pb-16">
+      <div className="px-4 pt-5 pb-16">
         <div className="flex gap-0 items-start">
 
           {/* ── Sidebar ── */}
           <aside
             style={{ width: sidebarWidth }}
-            className="shrink-0 sticky top-4 self-start max-h-[calc(100vh-5rem)] overflow-y-auto space-y-3 pb-4 scrollbar-thin"
+            className="shrink-0 sticky top-[76px] self-start max-h-[calc(100vh-5rem)] overflow-y-auto pb-4 scrollbar-thin"
           >
-            <ListPanel
-              selectedId={selectedList?.id ?? null}
-              loadedTickers={loadedTickers}
-              onSelect={list => setSelectedList(list)}
-            />
+            {/* ── Tab bar ── */}
+            <div className="flex border-b border-slate-800 bg-slate-900 rounded-t-xl sticky top-0 z-10">
+              {([
+                { key: 'data',      icon: '📊', label: 'Data'    },
+                { key: 'sr',        icon: '⚙️',  label: 'Analyse' },
+                { key: 'favorites', icon: '⭐',  label: 'Favoris' },
+              ] as const).map(tab => (
+                <button
+                  key={tab.key}
+                  onClick={() => setSidebarTab(tab.key)}
+                  className={`flex-1 flex flex-col items-center py-2 gap-0.5 text-xs transition-colors border-b-2 ${
+                    sidebarTab === tab.key
+                      ? 'border-blue-500 text-blue-400'
+                      : 'border-transparent text-slate-500 hover:text-slate-300'
+                  }`}
+                >
+                  <span className="text-sm leading-none">{tab.icon}</span>
+                  <span>{tab.label}</span>
+                </button>
+              ))}
+            </div>
 
-            <SessionPanel
-              hasData={hasData}
-              period={currentPeriod}
-              interval={currentInterval}
-              params={analysisParams}
-              results={results}
-              onRestore={handleRestoreSession}
-              refreshTrigger={sessionVersion}
-              onSessionSaved={() => setSessionVersion(v => v + 1)}
-            />
+            {/* ── Tab content ── */}
+            <div className="space-y-3 pt-3">
+              {sidebarTab === 'data' && (
+                <>
+                  <ListPanel
+                    selectedId={selectedList?.id ?? null}
+                    loadedTickers={loadedTickers}
+                    onSelect={list => setSelectedList(list)}
+                  />
+                  <TickerForm
+                    onFetch={handleFetch}
+                    loading={loading}
+                    loadedTickers={loadedTickers}
+                    selectedList={selectedList}
+                    activeTimeframe={activeTimeframe}
+                    onClearAll={handleClearAll}
+                    period={currentPeriod}
+                    interval={currentInterval}
+                    onPeriodChange={setCurrentPeriod}
+                    onIntervalChange={setCurrentInterval}
+                  />
+                  <SessionPanel
+                    hasData={hasData}
+                    period={currentPeriod}
+                    interval={currentInterval}
+                    params={analysisParams}
+                    results={results}
+                    onRestore={handleRestoreSession}
+                    refreshTrigger={sessionVersion}
+                    onSessionSaved={() => setSessionVersion(v => v + 1)}
+                  />
+                </>
+              )}
+              {sidebarTab === 'sr' && (
+                <SRParamsPanel
+                  params={analysisParams}
+                  hasData={hasData}
+                  onParamsChange={setAnalysisParams}
+                  zoneOpacity={zoneOpacity}
+                  onZoneOpacityChange={setZoneOpacity}
+                />
+              )}
+              {sidebarTab === 'favorites' && (
+                <FavoritesPanel
+                  favorites={favorites}
+                  onFavoritesChange={setFavorites}
+                  onLoad={handleLoadFavorite}
+                />
+              )}
+            </div>
 
-            <TickerForm
-              onFetch={handleFetch}
-              loading={loading}
-              loadedTickers={loadedTickers}
-              selectedList={selectedList}
-              activeTimeframe={activeTimeframe}
-              onClearAll={handleClearAll}
-              period={currentPeriod}
-              interval={currentInterval}
-              onPeriodChange={setCurrentPeriod}
-              onIntervalChange={setCurrentInterval}
-            />
-
-            <SRParamsPanel
-              params={analysisParams}
-              hasData={hasData}
-              onParamsChange={setAnalysisParams}
-              zoneOpacity={zoneOpacity}
-              onZoneOpacityChange={setZoneOpacity}
-            />
-
-            <FavoritesPanel
-              favorites={favorites}
-              onFavoritesChange={setFavorites}
-              onLoad={handleLoadFavorite}
-            />
-
-            <StatsBar />
+            {/* ── Stats footer ── */}
+            <div className="mt-3 pt-3 border-t border-slate-800">
+              <StatsBar />
+            </div>
           </aside>
 
           {/* ── Resize handle ── */}
@@ -394,115 +436,127 @@ export default function App() {
             {results.length > 0 && !loading && (
               <>
                 {/* ── Filter / sort bar ── */}
-                <div className="bg-slate-900 border border-slate-700 rounded-2xl p-3 mb-4 space-y-2.5">
+                <div className="bg-slate-900 border border-slate-700 rounded-2xl px-3 py-2 mb-4 flex items-center gap-2 flex-wrap">
 
-                  {/* Row 0: filtre S/R — contrôle la liste ET les zones visuelles */}
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs text-slate-500 uppercase tracking-widest">Type</span>
-                    <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
-                      {([
-                        { key: 'all',        label: 'S + R',       count: results.length },
-                        { key: 'support',    label: 'Supports',    count: countSupports },
-                        { key: 'resistance', label: 'Résistances', count: countResistances },
-                      ] as const).map(({ key, label, count }) => (
+                  {/* Type S/R */}
+                  <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                    {([
+                      { key: 'all',        label: 'S+R',    count: results.length },
+                      { key: 'support',    label: 'Supp',   count: countSupports },
+                      { key: 'resistance', label: 'Rés',    count: countResistances },
+                    ] as const).map(({ key, label, count }) => (
+                      <button
+                        key={key}
+                        onClick={() => setSrTypeFilter(key)}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                          srTypeFilter === key
+                            ? key === 'support'    ? 'bg-green-700 text-white'
+                            : key === 'resistance' ? 'bg-red-700 text-white'
+                            :                        'bg-blue-600 text-white'
+                            : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {label}
+                        <span className={`text-xs px-1 py-0.5 rounded-full ${srTypeFilter === key ? 'bg-white/20 text-white' : 'bg-slate-700 text-slate-500'}`}>
+                          {count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="w-px h-4 bg-slate-700 shrink-0" />
+
+                  {/* Niveaux */}
+                  <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                    {([
+                      { key: 'all', label: 'Tous', count: afterTypeFilter.length },
+                      { key: 'any', label: 'S/R',  count: withLevels },
+                    ] as const).map(({ key, label, count }) => (
+                      <button
+                        key={key}
+                        onClick={() => setLevelFilter(key)}
+                        className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                          levelFilter === key ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        {label}
+                        <span className={`text-xs px-1 py-0.5 rounded-full ${levelFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                          {count}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="w-px h-4 bg-slate-700 shrink-0" />
+
+                  {/* Filtres actifs */}
+                  <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                    <button
+                      onClick={() => setActiveFilters(new Set())}
+                      className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
+                        activeFilters.size === 0 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                      }`}
+                    >
+                      Tous
+                      <span className={`text-xs px-1 py-0.5 rounded-full ${activeFilters.size === 0 ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
+                        {afterLevelFilter.length}
+                      </span>
+                    </button>
+                    {([
+                      { key: 'favorites' as ActiveFilter, label: '★',        count: favCount,  color: 'text-yellow-400' },
+                      { key: 'score'     as ActiveFilter, label: '≥50',       count: highScore, color: 'text-blue-400' },
+                    ]).map(({ key, label, count, color }) => {
+                      const isActive = activeFilters.has(key);
+                      return (
                         <button
                           key={key}
-                          onClick={() => setSrTypeFilter(key)}
+                          onClick={() => toggleFilter(key)}
+                          title={key === 'favorites' ? 'Favoris seulement' : 'Score ≥ 50'}
                           className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                            srTypeFilter === key
-                              ? key === 'support'    ? 'bg-green-700 text-white'
-                              : key === 'resistance' ? 'bg-red-700 text-white'
-                              :                        'bg-blue-600 text-white'
-                              : 'text-slate-400 hover:text-white'
+                            isActive ? 'bg-blue-600 text-white' : `${color} hover:text-white`
                           }`}
                         >
                           {label}
-                          <span className={`text-xs px-1 py-0.5 rounded-full ${srTypeFilter === key ? 'bg-white/20 text-white' : 'bg-slate-700 text-slate-500'}`}>
+                          <span className={`text-xs px-1 py-0.5 rounded-full ${isActive ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
                             {count}
                           </span>
                         </button>
-                      ))}
-                    </div>
+                      );
+                    })}
                   </div>
 
-                  {/* Row 1: présence de niveaux + tri */}
-                  <div className="flex items-center justify-between flex-wrap gap-2">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs text-slate-500 uppercase tracking-widest">Niveaux</span>
-                      <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
-                        {([
-                          { key: 'all', label: 'Tous', count: afterTypeFilter.length },
-                          { key: 'any', label: 'S/R',  count: withLevels },
-                        ] as const).map(({ key, label, count }) => (
-                          <button
-                            key={key}
-                            onClick={() => setLevelFilter(key)}
-                            className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                              levelFilter === key ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
-                            }`}
-                          >
-                            {label}
-                            <span className={`text-xs px-1 py-0.5 rounded-full ${levelFilter === key ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                              {count}
-                            </span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                  {/* Tri */}
+                  <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                    <button
+                      onClick={() => setSortMode('score')}
+                      className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >Score ↓</button>
+                    <button
+                      onClick={() => setSortMode('ticker')}
+                      className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
+                    >A–Z</button>
+                  </div>
 
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                  {/* Séparateur + grid toggle + compteur à droite */}
+                  <div className="ml-auto flex items-center gap-2">
+                    <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
+                      {([1, 2, 3] as const).map(n => (
                         <button
-                          onClick={() => setActiveFilters(new Set())}
-                          className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                            activeFilters.size === 0 ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
+                          key={n}
+                          onClick={() => setGridCols(n)}
+                          title={`${n} colonne${n > 1 ? 's' : ''}`}
+                          className={`w-6 h-6 flex items-center justify-center rounded-md text-xs font-bold transition-colors ${
+                            gridCols === n ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'
                           }`}
-                        >
-                          Tous
-                          <span className={`text-xs px-1 py-0.5 rounded-full ${activeFilters.size === 0 ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                            {afterLevelFilter.length}
-                          </span>
-                        </button>
-                        {([
-                          { key: 'favorites' as ActiveFilter, label: '★ Favoris',  count: favCount,   color: 'text-yellow-400' },
-                          { key: 'score'     as ActiveFilter, label: 'Score ≥ 50', count: highScore,  color: 'text-blue-400' },
-                        ]).map(({ key, label, count, color }) => {
-                          const isActive = activeFilters.has(key);
-                          return (
-                            <button
-                              key={key}
-                              onClick={() => toggleFilter(key)}
-                              className={`flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-colors ${
-                                isActive ? 'bg-blue-600 text-white' : `${color} hover:text-white`
-                              }`}
-                            >
-                              {label}
-                              <span className={`text-xs px-1 py-0.5 rounded-full ${isActive ? 'bg-blue-500 text-blue-100' : 'bg-slate-700 text-slate-500'}`}>
-                                {count}
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </div>
-
-                      <div className="flex items-center gap-0.5 bg-slate-800 rounded-lg p-0.5">
-                        <button
-                          onClick={() => setSortMode('score')}
-                          className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'score' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                        >Score ↓</button>
-                        <button
-                          onClick={() => setSortMode('ticker')}
-                          className={`px-2 py-1 rounded-md text-xs font-medium transition-colors ${sortMode === 'ticker' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-white'}`}
-                        >A–Z</button>
-                      </div>
-
-                      <p className="text-slate-500 text-xs">
-                        {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
-                        {activeFilters.size > 0 && (
-                          <span className="ml-1 text-blue-400">· {activeFilters.size} filtre{activeFilters.size > 1 ? 's' : ''} actif{activeFilters.size > 1 ? 's' : ''}</span>
-                        )}
-                      </p>
+                        >{n}</button>
+                      ))}
                     </div>
+                    <p className="text-slate-500 text-xs whitespace-nowrap">
+                      {sorted.length} affiché{sorted.length > 1 ? 's' : ''}
+                      {activeFilters.size > 0 && (
+                        <span className="ml-1 text-blue-400">· {activeFilters.size} filtre{activeFilters.size > 1 ? 's' : ''}</span>
+                      )}
+                    </p>
                   </div>
                 </div>
 
@@ -512,7 +566,7 @@ export default function App() {
                     <p className="text-sm">Essayez d'assouplir la tolérance ou de changer de filtre.</p>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+                  <div className={`grid gap-4 ${gridCols === 1 ? 'grid-cols-1' : gridCols === 3 ? 'grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3' : 'grid-cols-1 xl:grid-cols-2'}`}>
                     {sorted.map(r => (
                       <ChartCard
                         key={r.ticker}

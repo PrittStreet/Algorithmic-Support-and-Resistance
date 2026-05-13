@@ -28,15 +28,15 @@ interface ChartCardProps {
 function ScoreBadge({ score }: { score: BreakoutScore }) {
   if (score.total === 0) return null;
   const color =
-    score.label === 'fort'   ? 'bg-green-900 text-green-300 border-green-700' :
-    score.label === 'modéré' ? 'bg-yellow-900 text-yellow-300 border-yellow-700' :
+    score.label === 'fort'   ? 'bg-green-900/60 text-green-300 border-green-700/60' :
+    score.label === 'modéré' ? 'bg-yellow-900/60 text-yellow-300 border-yellow-700/60' :
     score.label === 'faible' ? 'bg-slate-800 text-slate-400 border-slate-600' :
                                'bg-slate-800 text-slate-500 border-slate-700';
   return (
-    <div className={`flex items-center gap-1.5 px-2 py-1 rounded-lg border text-xs font-semibold ${color}`}
+    <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-sm font-bold ${color}`}
       title={`Tightness: ${score.tightness}/40 · Proximity: ${score.proximity}/40 · Accumulation: ${score.accumulation}/20`}>
-      <span className="text-xs opacity-70">⬆</span>
       {score.total}
+      {score.label && <span className="text-xs font-normal opacity-60">{score.label}</span>}
     </div>
   );
 }
@@ -175,14 +175,14 @@ export function ChartCard({
   const resistances = srLevels.filter(l => l.type === 'resistance');
 
   return (
-    <div ref={cardRef} className={`bg-slate-900 border rounded-2xl p-4 hover:border-slate-500 transition-colors ${isFavorite ? 'border-yellow-500/80 shadow-[0_0_0_1px_rgba(234,179,8,0.25)]' : 'border-slate-700'}`}>
+    <div ref={cardRef} className={`bg-slate-900 border rounded-2xl p-4 transition-all duration-150 hover:shadow-lg hover:shadow-black/40 ${isFavorite ? 'border-yellow-500/80 shadow-[0_0_0_1px_rgba(234,179,8,0.25)] hover:border-yellow-400/90' : 'border-slate-700 hover:border-slate-500'}`}>
       {/* Header */}
       <div className="flex items-start justify-between mb-2 gap-2">
         <div className="min-w-0">
           <h3 className="text-white font-bold text-base tracking-wide">{ticker}</h3>
-          <div className="flex gap-3 text-xs font-medium mt-0.5">
-            <span className="text-green-400">{supports.length} supp</span>
-            <span className="text-red-400">{resistances.length} rés</span>
+          <div className="flex gap-1.5 mt-1">
+            <span className="px-1.5 py-0.5 bg-green-900/40 text-green-400 rounded text-xs font-semibold border border-green-800/50">{supports.length} S</span>
+            <span className="px-1.5 py-0.5 bg-red-900/40 text-red-400 rounded text-xs font-semibold border border-red-800/50">{resistances.length} R</span>
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -217,8 +217,8 @@ export function ChartCard({
             { label: 'Accum', val: score.accumulation, max: 20, color: 'bg-purple-500' },
           ].map(({ label, val, max, color }) => (
             <div key={label} className="flex-1" title={`${label}: ${val}/${max}`}>
-              <div className="text-slate-600 text-xs mb-0.5">{label}</div>
-              <div className="h-1 bg-slate-800 rounded-full overflow-hidden">
+              <div className="text-slate-500 text-xs mb-1">{label}</div>
+              <div className="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                 <div className={`h-full ${color} rounded-full`} style={{ width: `${(val / max) * 100}%` }} />
               </div>
             </div>
