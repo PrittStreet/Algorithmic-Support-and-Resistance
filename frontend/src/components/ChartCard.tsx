@@ -265,7 +265,18 @@ export function ChartCard({
 
       <div ref={containerRef} style={{ minHeight: 300 }}>
         {!visible && (
-          <div className="h-[300px] flex items-center justify-center text-slate-700 text-xs">◌</div>
+          <div className="h-[300px] animate-pulse rounded-xl overflow-hidden bg-slate-800/40 relative">
+            <div className="absolute inset-0 flex flex-col justify-between py-4 px-2 pointer-events-none">
+              {[0,1,2,3].map(i => (
+                <div key={i} className="w-full h-px bg-slate-700/50" />
+              ))}
+            </div>
+            <div className="absolute bottom-4 left-2 right-2 flex items-end gap-px h-[220px]">
+              {[40,62,35,80,55,42,70,30,85,50,65,38,75,55,45,60,33,72,50,82,44,56,66,40,74,51,61,46,70,54].map((h, i) => (
+                <div key={i} className="flex-1 bg-slate-700/60 rounded-sm" style={{ height: `${h}%` }} />
+              ))}
+            </div>
+          </div>
         )}
       </div>
     </div>
