@@ -1,5 +1,5 @@
 import type { AnalysisParams } from '../sr';
-import type { OHLCVBar, SRLevel, BreakoutScore } from '../api';
+import type { OHLCVBar, SRLevel, BreakoutScore, TradeJournalEntry, TradeInput } from '../api';
 
 export interface TickerList {
   id: string;
@@ -160,6 +160,28 @@ export async function updateFavoriteNote(
 
 export async function removeFavorite(ticker: string, period: string, interval: string): Promise<void> {
   return api<void>('DELETE', `/favorites/${ticker}/${period}/${interval}`);
+}
+
+// ── Trade Journal ─────────────────────────────────────────────────────────────
+
+export async function getTradeJournal(): Promise<TradeJournalEntry[]> {
+  return api<TradeJournalEntry[]>('GET', '/trade-journal');
+}
+
+export async function createTradeJournalEntries(trades: TradeInput[]): Promise<TradeJournalEntry[]> {
+  return api<TradeJournalEntry[]>('POST', '/trade-journal', trades);
+}
+
+export async function deleteTradeJournalEntry(id: string): Promise<void> {
+  return api<void>('DELETE', `/trade-journal/${id}`);
+}
+
+export async function clearTradeJournal(): Promise<void> {
+  return api<void>('DELETE', '/trade-journal');
+}
+
+export async function updateTradeFavorite(id: string, isFavorite: boolean): Promise<TradeJournalEntry> {
+  return api<TradeJournalEntry>('PATCH', `/trade-journal/${id}/favorite`, { is_favorite: isFavorite });
 }
 
 // ── One-time migration from localStorage → SQLite ─────────────────────────────

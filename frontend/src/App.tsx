@@ -5,15 +5,18 @@ import { ChartCard } from './components/ChartCard';
 import { ListPanel } from './components/ListPanel';
 import { SessionPanel } from './components/SessionPanel';
 import { FavoritesPanel } from './components/FavoritesPanel';
+import { FundamentalPanel } from './components/FundamentalPanel';
+import { TradeJournalPanel, TradeJournalMainView } from './components/TradeJournalPanel';
 import { StatsBar } from './components/StatsBar';
-import { fetchOhlcv } from './api';
+import { fetchOhlcv, testConnection, analyzeFundamentalsStream } from './api';
+import type { FundamentalResult, TradeJournalEntry } from './api';
 import { analyzeOhlcv, computeSupportScore } from './sr';
 import type { OHLCVBar, TickerResult, FetchParams } from './api';
 import type { AnalysisParams } from './sr';
 import type { TickerList, Session, Favorite } from './lib/api-storage';
 import {
   getFavorites, upsertFavorite, removeFavorite, favoriteKey,
-  migrateFromLocalStorage, saveSession,
+  migrateFromLocalStorage, saveSession, getTradeJournal,
 } from './lib/api-storage';
 import './App.css';
 
@@ -33,7 +36,14 @@ type SortMode = 'score' | 'ticker';
 export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(240);
   const sidebarWidthRef = useRef(240);
-  const [sidebarTab, setSidebarTab] = useState<'data' | 'sr' | 'favorites'>('data');
+  const [sidebarTab, setSidebarTab] = useState<'data' | 'sr' | 'favorites' | 'journal'>('data');
+  const [journalTrades, setJournalTrades] = useState<TradeJournalEntry[]>([]);
+  const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('gemini_api_key') ?? '');
+  const [geminiModel, setGeminiModel]   = useState(() => localStorage.getItem('gemini_model') ?? 'gemini-3-flash-preview');
+  const [isFavAnalyzing, setIsFavAnalyzing] = useState(false);
+  const [favAnalyzeProgress, setFavAnalyzeProgress] = useState({ done: 0, total: 0 });
+
+  const [fundamentalResults, setFundamentalResults] = useState<Record<string, FundamentalResult>>({});
 
   const startResize = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -67,6 +77,7 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [noData, setNoData] = useState(false);
   const [fromCache, setFromCache] = useState<boolean | null>(null);
+  const [apiStatus, setApiStatus] = useState<null | 'checking' | 'ok' | 'error'>(null);
 
   const [levelFilter, setLevelFilter] = useState<LevelFilter>('any');
   const [activeFilters, setActiveFilters] = useState<Set<ActiveFilter>>(new Set());
@@ -101,6 +112,7 @@ export default function App() {
     migrateFromLocalStorage().then(() => {
       getFavorites().then(setFavorites);
     });
+    getTradeJournal().then(setJournalTrades);
   }, []);
 
   const favoriteSet = useMemo(() => {
@@ -159,6 +171,42 @@ export default function App() {
     }
   }, [ohlcvByTicker, debouncedParams]);
 
+  const handleGeminiKeyChange = (key: string) => {
+    setGeminiApiKey(key);
+    localStorage.setItem('gemini_api_key', key);
+  };
+
+  const handleGeminiModelChange = (model: string) => {
+    setGeminiModel(model);
+    localStorage.setItem('gemini_model', model);
+  };
+
+  const handleAnalyzeFavorites = async () => {
+    if (!geminiApiKey.trim()) return;
+    const tickers = [...new Set(favorites.map(f => f.ticker))];
+    if (tickers.length === 0) return;
+    setIsFavAnalyzing(true);
+    setFavAnalyzeProgress({ done: 0, total: tickers.length });
+    try {
+      for await (const result of analyzeFundamentalsStream(tickers, geminiApiKey.trim(), geminiModel)) {
+        setFundamentalResults(prev => ({ ...prev, [result.ticker]: result }));
+        setFavAnalyzeProgress(p => ({ ...p, done: p.done + 1 }));
+      }
+    } finally {
+      setIsFavAnalyzing(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    setApiStatus('checking');
+    try {
+      await testConnection();
+      setApiStatus('ok');
+    } catch {
+      setApiStatus('error');
+    }
+  };
+
   const handleClearAll = () => {
     fetchAbortRef.current?.abort();
     setOhlcvByTicker({});
@@ -206,7 +254,15 @@ export default function App() {
       if (!allCached && data.results.length > 0) autoSavePending.current = true;
     } catch (e) {
       if ((e as Error)?.name === 'AbortError') return;
-      setError("Impossible de contacter le backend. Vérifiez qu'uvicorn tourne sur le port 8000.");
+      const msg = (e as Error)?.message ?? '';
+      if (msg.startsWith('Erreur 5')) {
+        setError(`Erreur interne du serveur — ${msg}. Consultez les logs uvicorn pour le détail.`);
+      } else if (msg.startsWith('Erreur 4')) {
+        setError(`Requête rejetée par le serveur — ${msg}.`);
+      } else {
+        setError("Backend inaccessible — vérifiez qu'uvicorn tourne sur le port 8000.");
+      }
+      setApiStatus(null);
     } finally {
       if (fetchAbortRef.current === controller) fetchAbortRef.current = null;
       setLoading(false);
@@ -279,6 +335,14 @@ export default function App() {
   const highScore        = displayResults.filter(r => r.score.total >= 50).length;
   const favCount         = results.filter(r => isFavoriteNow(r.ticker)).length;
 
+  const topTickers = useMemo(() =>
+    [...results]
+      .sort((a, b) => b.score.total - a.score.total)
+      .slice(0, 20)
+      .map(r => r.ticker),
+    [results]
+  );
+
   return (
     <div className="min-h-screen bg-[#1e2939] text-white">
       <header className="sticky top-0 z-20 border-b border-slate-700/60 px-4 py-3 bg-[#1e2939]/95 backdrop-blur-sm">
@@ -324,6 +388,7 @@ export default function App() {
                 { key: 'data',      icon: '📊', label: 'Data'    },
                 { key: 'sr',        icon: '⚙️',  label: 'Analyse' },
                 { key: 'favorites', icon: '⭐',  label: 'Favoris' },
+                { key: 'journal',   icon: '📒', label: 'Journal' },
               ] as const).map(tab => (
                 <button
                   key={tab.key}
@@ -371,6 +436,16 @@ export default function App() {
                     refreshTrigger={sessionVersion}
                     onSessionSaved={() => setSessionVersion(v => v + 1)}
                   />
+                  <div className="border-t border-slate-800 pt-3">
+                    <FundamentalPanel
+                      topTickers={topTickers}
+                      onResults={setFundamentalResults}
+                      apiKey={geminiApiKey}
+                      onApiKeyChange={handleGeminiKeyChange}
+                      model={geminiModel}
+                      onModelChange={handleGeminiModelChange}
+                    />
+                  </div>
                 </>
               )}
               {sidebarTab === 'sr' && (
@@ -387,6 +462,19 @@ export default function App() {
                   favorites={favorites}
                   onFavoritesChange={setFavorites}
                   onLoad={handleLoadFavorite}
+                  onAnalyzeFavorites={handleAnalyzeFavorites}
+                  isFavAnalyzing={isFavAnalyzing}
+                  favAnalyzeProgress={favAnalyzeProgress}
+                />
+              )}
+              {sidebarTab === 'journal' && (
+                <TradeJournalPanel
+                  trades={journalTrades}
+                  onTradesChange={setJournalTrades}
+                  apiKey={geminiApiKey}
+                  onApiKeyChange={handleGeminiKeyChange}
+                  model={geminiModel}
+                  onModelChange={handleGeminiModelChange}
                 />
               )}
             </div>
@@ -405,6 +493,16 @@ export default function App() {
 
           {/* ── Main content ── */}
           <div className="flex-1 min-w-0 pl-2">
+            {sidebarTab === 'journal' && (
+              <TradeJournalMainView
+                trades={journalTrades}
+                onTradesChange={setJournalTrades}
+                apiKey={geminiApiKey}
+                model={geminiModel}
+              />
+            )}
+            {sidebarTab !== 'journal' && (
+            <>
             {loading && (
               <div className="flex items-center justify-center py-20 gap-3 text-slate-400">
                 <div className="w-5 h-5 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
@@ -412,7 +510,24 @@ export default function App() {
               </div>
             )}
             {error && (
-              <div className="bg-red-950 border border-red-800 text-red-300 rounded-xl px-4 py-3 mb-4 text-sm">{error}</div>
+              <div className="bg-red-950 border border-red-800 text-red-300 rounded-xl px-4 py-3 mb-4 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <span>{error}</span>
+                  <button
+                    onClick={handleTestConnection}
+                    disabled={apiStatus === 'checking'}
+                    className="shrink-0 px-2.5 py-1 bg-red-900 hover:bg-red-800 disabled:opacity-50 text-red-200 rounded-lg text-xs font-medium transition-colors"
+                  >
+                    {apiStatus === 'checking' ? '…' : 'Tester la connexion'}
+                  </button>
+                </div>
+                {apiStatus === 'ok' && (
+                  <p className="mt-2 text-xs text-green-400">✓ Backend accessible — le problème vient des données ou d'une exception serveur.</p>
+                )}
+                {apiStatus === 'error' && (
+                  <p className="mt-2 text-xs text-red-400">✗ Backend inaccessible — uvicorn ne répond pas sur le port 8000.</p>
+                )}
+              </div>
             )}
             {noData && !loading && (
               <div className="bg-amber-950 border border-amber-800 text-amber-300 rounded-xl px-4 py-3 mb-4 text-sm">
@@ -429,7 +544,20 @@ export default function App() {
             {!hasData && !loading && !error && !noData && (
               <div className="flex flex-col items-center justify-center py-32 text-slate-600">
                 <p className="text-lg font-medium mb-1">Aucune donnée chargée</p>
-                <p className="text-sm">Sélectionne une liste ou saisis des tickers dans le panneau gauche, puis clique sur <span className="text-slate-400">Charger les données</span>.</p>
+                <p className="text-sm mb-4">Sélectionne une liste ou saisis des tickers dans le panneau gauche, puis clique sur <span className="text-slate-400">Charger les données</span>.</p>
+                <button
+                  onClick={handleTestConnection}
+                  disabled={apiStatus === 'checking'}
+                  className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-400 hover:text-slate-200 rounded-lg text-xs font-medium transition-colors border border-slate-700"
+                >
+                  {apiStatus === 'checking' ? 'Test en cours…' : 'Tester la connexion API'}
+                </button>
+                {apiStatus === 'ok' && (
+                  <p className="mt-2 text-xs text-green-500">✓ Backend accessible (port 8000)</p>
+                )}
+                {apiStatus === 'error' && (
+                  <p className="mt-2 text-xs text-red-500">✗ Backend inaccessible — démarrez uvicorn sur le port 8000</p>
+                )}
               </div>
             )}
 
@@ -580,11 +708,14 @@ export default function App() {
                         dif={analysisParams.dif ?? 1.5}
                         srTypeFilter={srTypeFilter}
                         zoneOpacity={zoneOpacity}
+                        fundamentalResult={fundamentalResults[r.ticker]}
                       />
                     ))}
                   </div>
                 )}
               </>
+            )}
+            </>
             )}
           </div>
         </div>

@@ -8,7 +8,7 @@ import {
   type IChartApi,
   type ISeriesApi,
 } from 'lightweight-charts';
-import type { OHLCVBar, SRLevel, BreakoutScore } from '../api';
+import type { OHLCVBar, SRLevel, BreakoutScore, FundamentalResult } from '../api';
 import { tradingViewUrl } from '../lib/tradingview';
 import { SRZonePrimitive } from '../lib/srZonePrimitive';
 
@@ -23,6 +23,35 @@ interface ChartCardProps {
   dif?: number;
   srTypeFilter?: 'all' | 'support' | 'resistance';
   zoneOpacity?: number;
+  fundamentalResult?: FundamentalResult;
+}
+
+function FundamentalBadge({ result }: { result: FundamentalResult }) {
+  if (result.error) {
+    return (
+      <div
+        className="flex items-center gap-1 px-2 py-1 rounded-lg border bg-slate-800 text-slate-500 border-slate-700 text-sm font-bold"
+        title={result.error}
+      >
+        F: —
+      </div>
+    );
+  }
+  const color =
+    result.sentiment === 'positif' ? 'bg-blue-900/60 text-blue-300 border-blue-700/60' :
+    result.sentiment === 'négatif' ? 'bg-red-900/60 text-red-300 border-red-700/60' :
+                                     'bg-slate-800 text-slate-400 border-slate-600';
+  const tooltip = [result.news_summary, result.projections, result.earnings_summary]
+    .filter(Boolean).join('\n');
+  return (
+    <div
+      className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-sm font-bold ${color}`}
+      title={tooltip}
+    >
+      F: {result.fundamental_score}
+      <span className="text-xs font-normal opacity-60">{result.sentiment}</span>
+    </div>
+  );
 }
 
 function ScoreBadge({ score }: { score: BreakoutScore }) {
@@ -43,7 +72,7 @@ function ScoreBadge({ score }: { score: BreakoutScore }) {
 
 export function ChartCard({
   ticker, ohlcv, srLevels, score, isFavorite, onToggleFavorite, interval,
-  srTypeFilter = 'all', zoneOpacity = 0.4,
+  srTypeFilter = 'all', zoneOpacity = 0.4, fundamentalResult,
 }: ChartCardProps) {
   const cardRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -185,8 +214,9 @@ export function ChartCard({
             <span className="px-1.5 py-0.5 bg-red-900/40 text-red-400 rounded text-xs font-semibold border border-red-800/50">{resistances.length} R</span>
           </div>
         </div>
-        <div className="flex items-center gap-1.5 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0 flex-wrap justify-end">
           <ScoreBadge score={score} />
+          {fundamentalResult && <FundamentalBadge result={fundamentalResult} />}
           {interval && (
             <a
               href={tradingViewUrl(ticker, interval)}
@@ -207,6 +237,13 @@ export function ChartCard({
           >{isFavorite ? '★' : '☆'}</button>
         </div>
       </div>
+
+      {/* Résumé fondamental */}
+      {fundamentalResult && !fundamentalResult.error && fundamentalResult.analyst_consensus && (
+        <p className="text-xs text-slate-500 mb-1.5 truncate" title={fundamentalResult.analyst_consensus}>
+          {fundamentalResult.analyst_consensus}
+        </p>
+      )}
 
       {/* Score detail bar */}
       {score.label && (

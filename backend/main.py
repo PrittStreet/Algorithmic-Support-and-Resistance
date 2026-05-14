@@ -8,6 +8,7 @@ from pathlib import Path
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, field_validator
 import yfinance as yf
 import pandas as pd
@@ -141,6 +142,22 @@ def _db_init():
                 points       TEXT NOT NULL,
                 created_at   INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS trade_journal (
+                id                TEXT PRIMARY KEY,
+                ticker            TEXT NOT NULL,
+                date_in           TEXT NOT NULL,
+                result_pct        REAL,
+                result_label      TEXT,
+                fundamental_score INTEGER,
+                sentiment         TEXT,
+                news_summary      TEXT,
+                projections       TEXT,
+                earnings_summary  TEXT,
+                analyst_consensus TEXT,
+                error             TEXT,
+                analyzed_at       INTEGER,
+                created_at        INTEGER NOT NULL
+            );
         """)
         # Migration: add annotation column to pre-existing feedback tables
         cols = [r["name"] for r in conn.execute("PRAGMA table_info(feedback)").fetchall()]
@@ -159,6 +176,21 @@ def _db_init():
             SET pattern_type = 'Custom'
             WHERE pattern_type = 'Double Bottom'
         """)
+        # Migration: create trade_journal if absent (pre-existing DB without CREATE IF NOT EXISTS)
+        tj_cols = [r["name"] for r in conn.execute("PRAGMA table_info(trade_journal)").fetchall()]
+        if not tj_cols:
+            conn.execute("""CREATE TABLE trade_journal (
+                id TEXT PRIMARY KEY, ticker TEXT NOT NULL, date_in TEXT NOT NULL,
+                result_pct REAL, result_label TEXT, fundamental_score INTEGER, sentiment TEXT,
+                news_summary TEXT, projections TEXT, earnings_summary TEXT,
+                analyst_consensus TEXT, error TEXT, analyzed_at INTEGER,
+                is_favorite INTEGER DEFAULT 0, created_at INTEGER NOT NULL
+            )""")
+        else:
+            if "result_label" not in tj_cols:
+                conn.execute("ALTER TABLE trade_journal ADD COLUMN result_label TEXT")
+            if "is_favorite" not in tj_cols:
+                conn.execute("ALTER TABLE trade_journal ADD COLUMN is_favorite INTEGER DEFAULT 0")
         count = conn.execute("SELECT COUNT(*) FROM ticker_lists").fetchone()[0]
         if count == 0:
             conn.execute("INSERT INTO ticker_lists VALUES (?,?,?,?)",
@@ -997,6 +1029,408 @@ async def gemini_analyze(req: GeminiAnalyzeRequest):
         )
     except (ValueError, KeyError) as exc:
         raise HTTPException(status_code=502, detail=f"Données Gemini invalides: {exc}")
+
+
+# ── Gemini Fundamental Analysis ───────────────────────────────────────────────
+
+class GeminiFundamentalRequest(BaseModel):
+    tickers: list[str]           # max 20, pré-filtrés par le frontend
+    api_key: str
+    model: str = "gemini-3-flash-preview"
+
+class FundamentalResult(BaseModel):
+    ticker: str
+    fundamental_score: int       # 0–100
+    sentiment: str               # "positif" | "neutre" | "négatif"
+    news_summary: str
+    projections: str             # objectifs prix analystes
+    earnings_summary: str        # résultats récents vs attentes
+    analyst_consensus: str       # buy/hold/sell + % consensus
+    error: Optional[str] = None
+
+@app.post("/api/gemini-fundamental")
+async def gemini_fundamental(req: GeminiFundamentalRequest):
+    import httpx
+
+    semaphore = asyncio.Semaphore(5)
+
+    async def analyze_one(ticker: str) -> FundamentalResult:
+        async with semaphore:
+            prompt = (
+                f"Ticker boursier : {ticker}. Utilise Google Search. "
+                f"Réponds UNIQUEMENT avec ce JSON compact (max 15 mots par champ texte) :\n"
+                f'{{"fundamental_score": <0-100>, '
+                f'"sentiment": "<positif|neutre|négatif>", '
+                f'"news_summary": "<1 phrase, actualité récente clé>", '
+                f'"projections": "<objectif prix + consensus analystes>", '
+                f'"earnings_summary": "<EPS/revenus récents vs attentes>", '
+                f'"analyst_consensus": "<acheter/neutre/vendre + % consensus>"}}\n\n'
+                f"Barème : 70-100=solide, 40-69=neutre, 0-39=dégradé."
+            )
+
+            payload = {
+                "tools": [{"google_search": {}}],
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
+            }
+
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{req.model}:generateContent?key={req.api_key}"
+            _empty = FundamentalResult(
+                ticker=ticker, fundamental_score=0, sentiment="neutre",
+                news_summary="", projections="", earnings_summary="", analyst_consensus="",
+            )
+
+            max_retries = 3
+            for attempt in range(max_retries + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=45.0) as client:
+                        resp = await client.post(url, json=payload)
+
+                    if resp.status_code == 503:
+                        if attempt < max_retries:
+                            await asyncio.sleep(2.0 * (2 ** attempt))  # 2s, 4s, 8s
+                            continue
+                        return _empty.model_copy(update={"error": f"Gemini 503: indisponible après {max_retries + 1} tentatives"})
+
+                    if resp.status_code != 200:
+                        return _empty.model_copy(update={"error": f"Gemini {resp.status_code}: {resp.text[:200]}"})
+
+                    data = resp.json()
+                    candidate = data["candidates"][0]
+                    finish_reason = candidate.get("finishReason", "")
+                    parts = candidate["content"]["parts"]
+                    text = " ".join(p["text"] for p in parts if "text" in p).strip()
+
+                    if finish_reason == "MAX_TOKENS":
+                        return _empty.model_copy(update={"error": "Réponse tronquée (MAX_TOKENS)"})
+
+                    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+
+                    result = None
+                    try:
+                        result = json.loads(text)
+                    except (json.JSONDecodeError, ValueError):
+                        match = re.search(r'\{.*\}', text, re.DOTALL)
+                        if match:
+                            try:
+                                result = json.loads(match.group())
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                    if result is None:
+                        return _empty.model_copy(update={"error": f"JSON invalide: {text[:100]}"})
+
+                    return FundamentalResult(
+                        ticker=ticker,
+                        fundamental_score=max(0, min(100, int(result.get("fundamental_score", 50)))),
+                        sentiment=str(result.get("sentiment", "neutre")),
+                        news_summary=str(result.get("news_summary", "")),
+                        projections=str(result.get("projections", "")),
+                        earnings_summary=str(result.get("earnings_summary", "")),
+                        analyst_consensus=str(result.get("analyst_consensus", "")),
+                    )
+
+                except httpx.RequestError as exc:
+                    if attempt < max_retries:
+                        await asyncio.sleep(2.0)
+                        continue
+                    return _empty.model_copy(update={"error": f"Réseau: {str(exc)[:100]}"})
+                except (KeyError, IndexError, ValueError) as exc:
+                    return _empty.model_copy(update={"error": f"Parsing: {str(exc)[:100]}"})
+
+            return _empty.model_copy(update={"error": "Échec inattendu"})
+
+    tickers = req.tickers[:20]
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def run_and_enqueue(ticker: str) -> None:
+        result = await analyze_one(ticker)
+        await queue.put(result)
+
+    async def generate():
+        tasks = [asyncio.create_task(run_and_enqueue(t)) for t in tickers]
+        for _ in range(len(tickers)):
+            result = await queue.get()
+            yield result.model_dump_json() + "\n"
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+
+# ── Trade Journal ────────────────────────────────────────────────────────────
+
+_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+def _validate_date(raw: str) -> str:
+    s = raw.strip()
+    if not _DATE_RE.match(s):
+        raise HTTPException(400, f"Date invalide (attendu YYYY-MM-DD): {raw!r}")
+    return s
+
+class TradeJournalEntryIn(BaseModel):
+    ticker: str
+    date_in: str
+    result_pct: Optional[float] = None
+    result_label: Optional[str] = None
+
+class TradeJournalAnalyzeRequest(BaseModel):
+    trade_ids: List[str]
+    api_key: str
+    model: str = "gemini-3-flash-preview"
+    force: bool = False
+
+class TradeFavoriteRequest(BaseModel):
+    is_favorite: bool
+
+def _trade_row_to_dict(r: dict) -> dict:
+    return {
+        "id": r["id"], "ticker": r["ticker"], "date_in": r["date_in"],
+        "result_pct": r["result_pct"], "result_label": r.get("result_label"),
+        "fundamental_score": r["fundamental_score"],
+        "sentiment": r["sentiment"], "news_summary": r["news_summary"],
+        "projections": r["projections"], "earnings_summary": r["earnings_summary"],
+        "analyst_consensus": r["analyst_consensus"], "error": r["error"],
+        "analyzed_at": r["analyzed_at"], "created_at": r["created_at"],
+        "is_favorite": bool(r.get("is_favorite") or 0),
+    }
+
+@app.get("/api/trade-journal")
+async def get_trade_journal():
+    rows = await _db_fetchall(
+        "SELECT * FROM trade_journal ORDER BY date_in DESC, created_at DESC"
+    )
+    return [_trade_row_to_dict(r) for r in rows]
+
+@app.post("/api/trade-journal/analyze")
+async def analyze_trade_journal(req: TradeJournalAnalyzeRequest):
+    import httpx
+
+    def _load_trades():
+        with _db_connect() as conn:
+            placeholders = ",".join("?" * len(req.trade_ids))
+            if req.force:
+                query = f"SELECT * FROM trade_journal WHERE id IN ({placeholders})"
+            else:
+                query = f"SELECT * FROM trade_journal WHERE id IN ({placeholders}) AND (analyzed_at IS NULL OR error IS NOT NULL)"
+            rows = conn.execute(query, req.trade_ids).fetchall()
+            return [dict(r) for r in rows]
+
+    trades = await asyncio.to_thread(_load_trades)
+    if not trades:
+        async def _empty_gen():
+            return
+            yield  # make it an async generator
+        return StreamingResponse(_empty_gen(), media_type="application/x-ndjson")
+
+    semaphore = asyncio.Semaphore(5)
+
+    async def analyze_one(trade: dict) -> dict:
+        async with semaphore:
+            ticker = trade["ticker"]
+            date_in = trade["date_in"]
+
+            prompt = (
+                f"Tu es un analyste financier expert. Tu dois analyser l'entreprise avec le ticker "
+                f"boursier {ticker}, mais en te limitant STRICTEMENT aux informations disponibles "
+                f"AVANT le {date_in}. Tu ne dois PAS utiliser d'informations postérieures à cette date.\n\n"
+                f"CONTRAINTE TEMPORELLE ABSOLUE : Date maximale d'information = {date_in}. "
+                f"Ignore tout événement survenu après cette date.\n\n"
+                f"Utilise Google Search pour obtenir des informations disponibles avant le {date_in} sur :\n"
+                f"1. Actualité importante dans les 3–6 mois précédant le {date_in}\n"
+                f"2. Projections des analystes disponibles avant le {date_in} : objectif prix, consensus\n"
+                f"3. Résultats financiers les plus récents publiés avant le {date_in} vs estimations (EPS, revenus)\n"
+                f"4. Sentiment général des institutions financières avant le {date_in}\n\n"
+                f"Barème note fondamentale (0–100) :\n"
+                f"- 70–100 : fondamentaux solides, catalyseurs positifs, perspectives excellentes\n"
+                f"- 40–69 : situation neutre ou mitigée\n"
+                f"- 0–39  : risques majeurs, fondamentaux dégradés\n\n"
+                f"Réponds UNIQUEMENT avec ce JSON (aucun texte autour) :\n"
+                f'{{"fundamental_score": <0-100>, "sentiment": "<positif|neutre|négatif>", '
+                f'"news_summary": "<2 phrases sur l\'actualité avant {date_in}>", '
+                f'"projections": "<objectif de prix + recommandation consensus avant {date_in}>", '
+                f'"earnings_summary": "<résultats les plus récents publiés avant {date_in} vs attentes>", '
+                f'"analyst_consensus": "<acheter/neutre/vendre + % du consensus avant {date_in}>"}}'
+            )
+
+            payload = {
+                "tools": [{"google_search": {}}],
+                "contents": [{"parts": [{"text": prompt}]}],
+                "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096},
+            }
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{req.model}:generateContent?key={req.api_key}"
+            )
+
+            result_data: dict = {}
+            max_retries = 3
+            for attempt in range(max_retries + 1):
+                try:
+                    async with httpx.AsyncClient(timeout=45.0) as client:
+                        resp = await client.post(url, json=payload)
+
+                    if resp.status_code == 503:
+                        if attempt < max_retries:
+                            await asyncio.sleep(2.0 * (2 ** attempt))
+                            continue
+                        result_data = {"error": f"Gemini 503: indisponible après {max_retries + 1} tentatives"}
+                        break
+
+                    if resp.status_code != 200:
+                        result_data = {"error": f"Gemini {resp.status_code}: {resp.text[:200]}"}
+                        break
+
+                    data = resp.json()
+                    candidate = data["candidates"][0]
+                    finish_reason = candidate.get("finishReason", "")
+                    parts = candidate["content"]["parts"]
+                    text = " ".join(p["text"] for p in parts if "text" in p).strip()
+
+                    if finish_reason == "MAX_TOKENS":
+                        result_data = {"error": "Réponse tronquée (MAX_TOKENS)"}
+                        break
+
+                    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.MULTILINE).strip()
+
+                    parsed = None
+                    try:
+                        parsed = json.loads(text)
+                    except (json.JSONDecodeError, ValueError):
+                        match = re.search(r'\{.*\}', text, re.DOTALL)
+                        if match:
+                            try:
+                                parsed = json.loads(match.group())
+                            except (json.JSONDecodeError, ValueError):
+                                pass
+
+                    if parsed is None:
+                        result_data = {"error": f"JSON invalide: {text[:100]}"}
+                        break
+
+                    result_data = {
+                        "fundamental_score": max(0, min(100, int(parsed.get("fundamental_score", 50)))),
+                        "sentiment": str(parsed.get("sentiment", "neutre")),
+                        "news_summary": str(parsed.get("news_summary", "")),
+                        "projections": str(parsed.get("projections", "")),
+                        "earnings_summary": str(parsed.get("earnings_summary", "")),
+                        "analyst_consensus": str(parsed.get("analyst_consensus", "")),
+                        "error": None,
+                    }
+                    break
+
+                except httpx.RequestError as exc:
+                    if attempt < max_retries:
+                        await asyncio.sleep(2.0)
+                        continue
+                    result_data = {"error": f"Réseau: {str(exc)[:100]}"}
+                    break
+                except (KeyError, IndexError, ValueError) as exc:
+                    result_data = {"error": f"Parsing: {str(exc)[:100]}"}
+                    break
+
+            if not result_data:
+                result_data = {"error": "Échec inattendu"}
+
+            now = int(time.time() * 1000)
+
+            def _save():
+                with _db_connect() as conn:
+                    conn.execute(
+                        """UPDATE trade_journal SET
+                            fundamental_score=?, sentiment=?, news_summary=?,
+                            projections=?, earnings_summary=?, analyst_consensus=?,
+                            error=?, analyzed_at=?
+                        WHERE id=?""",
+                        (
+                            result_data.get("fundamental_score"),
+                            result_data.get("sentiment"),
+                            result_data.get("news_summary"),
+                            result_data.get("projections"),
+                            result_data.get("earnings_summary"),
+                            result_data.get("analyst_consensus"),
+                            result_data.get("error"),
+                            now,
+                            trade["id"],
+                        ),
+                    )
+                    conn.commit()
+
+            await asyncio.to_thread(_save)
+
+            return {
+                "id": trade["id"],
+                "ticker": ticker,
+                "date_in": date_in,
+                "result_pct": trade["result_pct"],
+                "created_at": trade["created_at"],
+                "analyzed_at": now,
+                **result_data,
+            }
+
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def run_and_enqueue(trade: dict) -> None:
+        result = await analyze_one(trade)
+        await queue.put(result)
+
+    async def generate():
+        tasks = [asyncio.create_task(run_and_enqueue(t)) for t in trades]
+        for _ in range(len(trades)):
+            result = await queue.get()
+            yield json.dumps(result) + "\n"
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
+
+@app.post("/api/trade-journal", status_code=201)
+async def create_trade_journal_entries(body: List[TradeJournalEntryIn]):
+    now = int(time.time() * 1000)
+
+    def _run():
+        with _db_connect() as conn:
+            inserted = []
+            for entry in body:
+                ticker = entry.ticker.strip().upper()
+                if not re.match(r"^[A-Z0-9.\^\-]{1,10}$", ticker):
+                    continue
+                date_in = _validate_date(entry.date_in)
+                uid = _uid()
+                conn.execute(
+                    "INSERT INTO trade_journal (id,ticker,date_in,result_pct,result_label,created_at) VALUES (?,?,?,?,?,?)",
+                    (uid, ticker, date_in, entry.result_pct, entry.result_label, now),
+                )
+                inserted.append({
+                    "id": uid, "ticker": ticker, "date_in": date_in,
+                    "result_pct": entry.result_pct, "result_label": entry.result_label,
+                    "created_at": now, "fundamental_score": None, "sentiment": None,
+                    "news_summary": None, "projections": None, "earnings_summary": None,
+                    "analyst_consensus": None, "error": None, "analyzed_at": None,
+                })
+            conn.commit()
+            return inserted
+
+    return await asyncio.to_thread(_run)
+
+@app.delete("/api/trade-journal")
+async def clear_trade_journal():
+    await _db_execute("DELETE FROM trade_journal")
+    return {"ok": True}
+
+@app.delete("/api/trade-journal/{entry_id}")
+async def delete_trade_journal_entry(entry_id: str):
+    await _db_execute("DELETE FROM trade_journal WHERE id=?", (entry_id,))
+    return {"ok": True}
+
+@app.patch("/api/trade-journal/{entry_id}/favorite")
+async def update_trade_favorite(entry_id: str, req: TradeFavoriteRequest):
+    await _db_execute(
+        "UPDATE trade_journal SET is_favorite = ? WHERE id = ?",
+        (1 if req.is_favorite else 0, entry_id)
+    )
+    row = await _db_fetchone("SELECT * FROM trade_journal WHERE id = ?", (entry_id,))
+    if row is None:
+        raise HTTPException(status_code=404, detail="Trade not found")
+    return _trade_row_to_dict(row)
 
 
 # ── Serve React build ─────────────────────────────────────────────────────────

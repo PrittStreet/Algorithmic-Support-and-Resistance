@@ -7,9 +7,12 @@ interface Props {
   favorites: Favorite[];
   onFavoritesChange: (updated: Favorite[]) => void;
   onLoad: (fav: Favorite) => void;
+  onAnalyzeFavorites?: () => void;
+  isFavAnalyzing?: boolean;
+  favAnalyzeProgress?: { done: number; total: number };
 }
 
-export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) {
+export function FavoritesPanel({ favorites, onFavoritesChange, onLoad, onAnalyzeFavorites, isFavAnalyzing, favAnalyzeProgress }: Props) {
   const [open, setOpen] = useState(false);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
@@ -61,6 +64,23 @@ export function FavoritesPanel({ favorites, onFavoritesChange, onLoad }: Props) 
 
       {open && (
         <div className="px-6 pb-5 space-y-2">
+          {onAnalyzeFavorites && favorites.length > 0 && (
+            <div className="mb-1">
+              <button
+                onClick={onAnalyzeFavorites}
+                disabled={isFavAnalyzing}
+                className={`w-full py-1.5 rounded-xl text-xs font-semibold transition-colors ${
+                  isFavAnalyzing
+                    ? 'bg-slate-700 text-slate-500 cursor-not-allowed'
+                    : 'bg-blue-600/80 hover:bg-blue-500 text-white'
+                }`}
+              >
+                {isFavAnalyzing && favAnalyzeProgress
+                  ? `Analyse en cours… ${favAnalyzeProgress.done}/${favAnalyzeProgress.total}`
+                  : '🔍 Analyser les favoris (IA)'}
+              </button>
+            </div>
+          )}
           {favorites.length === 0 ? (
             <p className="text-slate-600 text-sm italic">
               Clique sur ☆ sur un chart pour l'ajouter aux favoris.
